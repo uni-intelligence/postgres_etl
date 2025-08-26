@@ -14,6 +14,7 @@ const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FullApiDestinationConfig {
     Memory,
     BigQuery {
@@ -29,6 +30,16 @@ pub enum FullApiDestinationConfig {
         #[schema(example = 8)]
         #[serde(skip_serializing_if = "Option::is_none")]
         max_concurrent_streams: Option<usize>,
+    },
+    DeltaLake {
+        #[schema(example = "s3://my-bucket/my-path")]
+        base_uri: String,
+        #[schema(example = "s3://my-bucket/my-path")]
+        warehouse: Option<String>,
+        #[schema(example = "[\"date\"]")]
+        partition_columns: Option<Vec<String>>,
+        #[schema(example = 100)]
+        optimize_after_commits: Option<u64>,
     },
 }
 
@@ -49,6 +60,17 @@ impl From<StoredDestinationConfig> for FullApiDestinationConfig {
                 max_staleness_mins,
                 max_concurrent_streams: Some(max_concurrent_streams),
             },
+            StoredDestinationConfig::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            } => Self::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            },
         }
     }
 }
@@ -63,6 +85,12 @@ pub enum StoredDestinationConfig {
         service_account_key: SerializableSecretString,
         max_staleness_mins: Option<u16>,
         max_concurrent_streams: usize,
+    },
+    DeltaLake {
+        base_uri: String,
+        warehouse: Option<String>,
+        partition_columns: Option<Vec<String>>,
+        optimize_after_commits: Option<u64>,
     },
 }
 
@@ -82,6 +110,17 @@ impl StoredDestinationConfig {
                 service_account_key,
                 max_staleness_mins,
                 max_concurrent_streams,
+            },
+            Self::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            } => DestinationConfig::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
             },
         }
     }
@@ -104,6 +143,17 @@ impl From<FullApiDestinationConfig> for StoredDestinationConfig {
                 max_staleness_mins,
                 max_concurrent_streams: max_concurrent_streams
                     .unwrap_or(DEFAULT_MAX_CONCURRENT_STREAMS),
+            },
+            FullApiDestinationConfig::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            } => Self::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
             },
         }
     }
@@ -136,12 +186,26 @@ impl Encrypt<EncryptedStoredDestinationConfig> for StoredDestinationConfig {
                     max_concurrent_streams,
                 })
             }
+            Self::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            } => {
+                Ok(EncryptedStoredDestinationConfig::DeltaLake {
+                    base_uri,
+                    warehouse,
+                    partition_columns,
+                    optimize_after_commits,
+                })
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EncryptedStoredDestinationConfig {
     Memory,
     BigQuery {
@@ -151,7 +215,13 @@ pub enum EncryptedStoredDestinationConfig {
         max_staleness_mins: Option<u16>,
         max_concurrent_streams: usize,
     },
-}
+    DeltaLake {
+        base_uri: String,
+        warehouse: Option<String>,
+        partition_columns: Option<Vec<String>>,
+        optimize_after_commits: Option<u64>,
+    },
+        }
 
 impl Store for EncryptedStoredDestinationConfig {}
 
@@ -182,6 +252,17 @@ impl Decrypt<StoredDestinationConfig> for EncryptedStoredDestinationConfig {
                     max_concurrent_streams,
                 })
             }
+            Self::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            } => Ok(StoredDestinationConfig::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            }),     
         }
     }
 }

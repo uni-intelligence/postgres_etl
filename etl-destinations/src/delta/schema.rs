@@ -1,7 +1,7 @@
 use deltalake::kernel::{ArrayType, DataType, StructField};
 use deltalake::{DeltaResult, Schema};
+use etl::types::is_array_type;
 use etl::types::{TableSchema, Type};
-use etl_postgres::types::is_array_type;
 
 /// Convert a Postgres scalar type to an equivalent Delta DataType
 fn postgres_scalar_type_to_delta(typ: &Type) -> DataType {
@@ -65,7 +65,7 @@ fn postgres_array_type_to_delta(typ: &Type) -> DataType {
 }
 
 /// Convert a Postgres `TableSchema` to a Delta `Schema`
-pub fn postgres_to_delta_schema(schema: &TableSchema) -> DeltaResult<Schema> {
+pub(crate) fn postgres_to_delta_schema(schema: &TableSchema) -> DeltaResult<Schema> {
     let fields: Vec<StructField> = schema
         .column_schemas
         .iter()
@@ -133,7 +133,7 @@ mod tests {
             assert!(matches!(array_type.element_type(), &DataType::INTEGER));
             assert!(array_type.contains_null());
         } else {
-            panic!("Expected Array type, got: {:?}", dt);
+            panic!("Expected Array type, got: {dt:?}");
         }
     }
 

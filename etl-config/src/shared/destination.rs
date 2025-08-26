@@ -8,6 +8,7 @@ use crate::SerializableSecretString;
 /// Each variant corresponds to a different supported destination system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum DestinationConfig {
     /// In-memory destination for ephemeral or test data.
     Memory,
@@ -40,5 +41,13 @@ pub enum DestinationConfig {
         /// - the volume of events processed by the ETL,
         /// - and the configured batch size.
         max_concurrent_streams: usize,
+    },
+    DeltaLake {
+        base_uri: String,
+        warehouse: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        partition_columns: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        optimize_after_commits: Option<u64>,
     },
 }

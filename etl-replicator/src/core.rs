@@ -10,7 +10,10 @@ use etl::types::PipelineId;
 use etl_config::shared::{
     BatchConfig, DestinationConfig, PgConnectionConfig, PipelineConfig, ReplicatorConfig,
 };
-use etl_destinations::bigquery::{BigQueryDestination, install_crypto_provider_for_bigquery};
+use etl_destinations::{
+    bigquery::{BigQueryDestination, install_crypto_provider_for_bigquery},
+    delta::{DeltaDestinationConfig, DeltaLakeDestination},
+};
 use secrecy::ExposeSecret;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{debug, info, warn};
@@ -65,6 +68,26 @@ pub async fn start_replicator_with_config(
             let pipeline = Pipeline::new(replicator_config.pipeline, state_store, destination);
             start_pipeline(pipeline).await?;
         }
+        DestinationConfig::DeltaLake {
+            base_uri,
+            warehouse,
+            partition_columns,
+            optimize_after_commits,
+        } => {
+            let destination = DeltaLakeDestination::new(
+                state_store.clone(),
+                DeltaDestinationConfig {
+                    base_uri: base_uri.clone(),
+                    warehouse: warehouse.clone(),
+                    partition_columns: partition_columns.clone(),
+                    optimize_after_commits: optimize_after_commits.map(|n| n.try_into().unwrap()),
+                },
+            );
+
+            let pipeline = Pipeline::new(replicator_config.pipeline, state_store, destination);
+            start_pipeline(pipeline).await?;
+        }
+        _ => unimplemented!("destination config not implemented"),
     }
 
     info!("replicator service completed");
@@ -97,6 +120,15 @@ fn log_destination_config(config: &DestinationConfig) {
                 "using bigquery destination config"
             )
         }
+        DestinationConfig::DeltaLake {
+            base_uri: _,
+            warehouse: _,
+            partition_columns: _,
+            optimize_after_commits: _,
+        } => {
+            debug!("using delta lake destination config");
+        }
+        _ => unimplemented!("destination config not implemented"),
     }
 }
 
