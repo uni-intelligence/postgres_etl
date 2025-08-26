@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use deltalake::{open_table, DeltaOps, DeltaResult, DeltaTable, StructField};
+use super::schema::postgres_to_delta_schema;
+use deltalake::{DeltaOps, DeltaResult, DeltaTable, open_table};
 use etl::types::TableSchema;
-use delta_kernel::engine::arrow_conversion::TryFromArrow;
-use super::schema::postgres_to_arrow_schema;
 
 /// Client for connecting to Delta Lake tables.
 #[derive(Clone)]
@@ -11,7 +10,9 @@ pub struct DeltaLakeClient {}
 
 impl DeltaLakeClient {
     /// Create a new client.
-    pub fn new() -> Self { Self {} }
+    pub fn new() -> Self {
+        Self {}
+    }
 
     /// Returns true if a Delta table exists at the given uri/path.
     pub async fn table_exists(&self, table_uri: &str) -> bool {
@@ -28,12 +29,13 @@ impl DeltaLakeClient {
             return Ok(Arc::new(table));
         }
 
-        let arrow_schema = postgres_to_arrow_schema(table_schema);
+        let delta_schema = postgres_to_delta_schema(table_schema)?;
 
         let ops = DeltaOps::try_from_uri(table_uri).await?;
         let table = ops
             .create()
-            .with_columns(arrow_schema.fields().iter().map(|field| StructField::try_from_arrow(field)))
+            // TODO(abhi): Figure out how to avoid the clone
+            .with_columns(delta_schema.fields().map(|field| field.clone()))
             .await?;
 
         Ok(Arc::new(table))
@@ -45,5 +47,3 @@ impl DeltaLakeClient {
         Ok(Arc::new(table))
     }
 }
-
-

@@ -43,10 +43,10 @@ clap = { version = "4.5.42", default-features = false }
 config = { version = "0.14", default-features = false }
 const-oid = { version = "0.9.6", default-features = false }
 constant_time_eq = { version = "0.4.2" }
+deltalake = { version = "0.27.0", default-features = false, features = ["rustls"] }
 fail = { version = "0.5.1", default-features = false }
 futures = { version = "0.3.31", default-features = false }
 gcp-bigquery-client = { version = "0.27.0", default-features = false }
-deltalake = { version = "0.27.0", default-features = false, features = ["rustls"] }
 iceberg = { version = "0.6.0", default-features = false }
 iceberg-catalog-rest = { version = "0.6.0", default-features = false }
 insta = { version = "1.43.1", default-features = false }

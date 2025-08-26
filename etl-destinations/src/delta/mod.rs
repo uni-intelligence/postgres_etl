@@ -1,6 +1,5 @@
 mod client;
-mod schema;
 mod core;
+mod schema;
 
 pub use client::DeltaLakeClient;
-
