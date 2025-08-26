@@ -1,9 +1,9 @@
 {
-    "warehouse-name": "dev-and-test-warehouse",
+    "warehouse-name": "iceberg-dev-and-test-warehouse",
     "project-id": "00000000-0000-0000-0000-000000000000",
     "storage-profile": {
         "type": "s3",
-        "bucket": "dev-and-test",
+        "bucket": "iceberg-dev-and-test",
         "key-prefix": "initial-warehouse",
         "assume-role-arn": null,
         "endpoint": "http://minio:9000",

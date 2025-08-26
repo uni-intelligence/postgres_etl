@@ -191,14 +191,12 @@ impl Encrypt<EncryptedStoredDestinationConfig> for StoredDestinationConfig {
                 warehouse,
                 partition_columns,
                 optimize_after_commits,
-            } => {
-                Ok(EncryptedStoredDestinationConfig::DeltaLake {
-                    base_uri,
-                    warehouse,
-                    partition_columns,
-                    optimize_after_commits,
-                })
-            }
+            } => Ok(EncryptedStoredDestinationConfig::DeltaLake {
+                base_uri,
+                warehouse,
+                partition_columns,
+                optimize_after_commits,
+            }),
         }
     }
 }
@@ -221,7 +219,7 @@ pub enum EncryptedStoredDestinationConfig {
         partition_columns: Option<Vec<String>>,
         optimize_after_commits: Option<u64>,
     },
-        }
+}
 
 impl Store for EncryptedStoredDestinationConfig {}
 
@@ -262,7 +260,7 @@ impl Decrypt<StoredDestinationConfig> for EncryptedStoredDestinationConfig {
                 warehouse,
                 partition_columns,
                 optimize_after_commits,
-            }),     
+            }),
         }
     }
 }

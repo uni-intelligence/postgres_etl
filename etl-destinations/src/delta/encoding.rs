@@ -4,9 +4,6 @@ use deltalake::arrow::error::ArrowError;
 use deltalake::arrow::record_batch::RecordBatch;
 use etl::types::{Cell, TableRow, TableSchema};
 use std::sync::Arc;
-
-use crate::delta::schema::postgres_to_delta_schema;
-
 /// Converts TableRows to Arrow RecordBatch for Delta Lake writes
 pub struct TableRowEncoder;
 
@@ -29,17 +26,27 @@ impl TableRowEncoder {
         table_schema: &TableSchema,
         table_rows: Vec<TableRow>,
     ) -> Result<RecordBatch, ArrowError> {
-        // Create Arrow schema from TableSchema
-        let delta_schema = postgres_to_delta_schema(table_schema)
-            .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
-
-        // Convert Delta schema to Arrow schema
-        let arrow_schema = Self::delta_schema_to_arrow(&delta_schema)?;
-
-        // Convert each column's data to Arrow arrays
         let arrays = Self::convert_columns_to_arrays(table_schema, &table_rows)?;
 
-        RecordBatch::try_new(Arc::new(arrow_schema), arrays)
+        // Create Arrow schema that MATCHES the actual array types we generated
+        let fields: Vec<Field> = table_schema
+            .column_schemas
+            .iter()
+            .zip(arrays.iter())
+            .map(|(col_schema, array)| {
+                Field::new(
+                    &col_schema.name,
+                    array.data_type().clone(),
+                    col_schema.nullable,
+                )
+            })
+            .collect();
+
+        let arrow_schema = Schema::new(fields);
+
+        let result = RecordBatch::try_new(Arc::new(arrow_schema), arrays);
+
+        result
     }
 
     /// Convert Delta schema to Arrow schema
@@ -100,38 +107,80 @@ impl TableRowEncoder {
         Ok(arrays)
     }
 
-    /// Convert a column of Cells to an Arrow array
+    /// Convert a column of Cells to an Arrow array based on the first non-null value's type
     fn convert_cell_column_to_array(cells: Vec<&Cell>) -> Result<ArrayRef, ArrowError> {
-        // todo(abhi): Implement proper type detection and conversion
-        // todo(abhi): Handle all Cell variants: Null, Bool, String, I16, I32, U32, I64, F32, F64,
-        //        Numeric, Date, Time, Timestamp, TimestampTz, Uuid, Json, Bytes, Array
+        if cells.is_empty() {
+            return Ok(Arc::new(StringArray::from(Vec::<Option<String>>::new())));
+        }
 
-        // For now, convert everything to string as a stub
-        let string_values: Vec<Option<String>> = cells
-            .iter()
-            .map(|cell| match cell {
-                Cell::Null => None,
-                Cell::Bool(b) => Some(b.to_string()),
-                Cell::String(s) => Some(s.clone()),
-                Cell::I16(i) => Some(i.to_string()),
-                Cell::I32(i) => Some(i.to_string()),
-                Cell::U32(i) => Some(i.to_string()),
-                Cell::I64(i) => Some(i.to_string()),
-                Cell::F32(f) => Some(f.to_string()),
-                Cell::F64(f) => Some(f.to_string()),
-                Cell::Numeric(n) => Some(n.to_string()),
-                Cell::Date(d) => Some(d.to_string()),
-                Cell::Time(t) => Some(t.to_string()),
-                Cell::Timestamp(ts) => Some(ts.to_string()),
-                Cell::TimestampTz(ts) => Some(ts.to_string()),
-                Cell::Uuid(u) => Some(u.to_string()),
-                Cell::Json(j) => Some(j.to_string()),
-                Cell::Bytes(b) => Some(format!("{b:?}")),
-                Cell::Array(a) => Some(format!("{a:?}")),
-            })
-            .collect();
+        // Determine the column type from the first non-null cell
+        let first_non_null = cells.iter().find(|cell| !matches!(cell, Cell::Null));
 
-        Ok(Arc::new(StringArray::from(string_values)))
+        match first_non_null {
+            Some(Cell::Bool(_)) => {
+                let bool_values: Vec<Option<bool>> = cells
+                    .iter()
+                    .map(|cell| match cell {
+                        Cell::Null => None,
+                        Cell::Bool(b) => Some(*b),
+                        _ => None, // Invalid conversion, treat as null
+                    })
+                    .collect();
+                Ok(Arc::new(BooleanArray::from(bool_values)))
+            }
+            Some(Cell::I32(_)) => {
+                let int_values: Vec<Option<i32>> = cells
+                    .iter()
+                    .map(|cell| match cell {
+                        Cell::Null => None,
+                        Cell::I32(i) => Some(*i),
+                        Cell::I16(i) => Some(*i as i32),
+                        Cell::U32(i) => Some(*i as i32),
+                        _ => None,
+                    })
+                    .collect();
+                Ok(Arc::new(Int32Array::from(int_values)))
+            }
+            Some(Cell::I16(_)) => {
+                let int_values: Vec<Option<i32>> = cells
+                    .iter()
+                    .map(|cell| match cell {
+                        Cell::Null => None,
+                        Cell::I16(i) => Some(*i as i32),
+                        Cell::I32(i) => Some(*i),
+                        _ => None,
+                    })
+                    .collect();
+                Ok(Arc::new(Int32Array::from(int_values)))
+            }
+            _ => {
+                // For all other types (String, Numeric, etc.), convert to string
+                let string_values: Vec<Option<String>> = cells
+                    .iter()
+                    .map(|cell| match cell {
+                        Cell::Null => None,
+                        Cell::Bool(b) => Some(b.to_string()),
+                        Cell::String(s) => Some(s.clone()),
+                        Cell::I16(i) => Some(i.to_string()),
+                        Cell::I32(i) => Some(i.to_string()),
+                        Cell::U32(i) => Some(i.to_string()),
+                        Cell::I64(i) => Some(i.to_string()),
+                        Cell::F32(f) => Some(f.to_string()),
+                        Cell::F64(f) => Some(f.to_string()),
+                        Cell::Numeric(n) => Some(n.to_string()),
+                        Cell::Date(d) => Some(d.to_string()),
+                        Cell::Time(t) => Some(t.to_string()),
+                        Cell::Timestamp(ts) => Some(ts.to_string()),
+                        Cell::TimestampTz(ts) => Some(ts.to_string()),
+                        Cell::Uuid(u) => Some(u.to_string()),
+                        Cell::Json(j) => Some(j.to_string()),
+                        Cell::Bytes(b) => Some(format!("{b:?}")),
+                        Cell::Array(a) => Some(format!("{a:?}")),
+                    })
+                    .collect();
+                Ok(Arc::new(StringArray::from(string_values)))
+            }
+        }
     }
 
     /// Convert Cell values to specific Arrow array types

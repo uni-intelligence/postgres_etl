@@ -83,7 +83,7 @@ impl Default for CreateWarehouseRequest {
                 r#type: Type::S3,
             },
             storage_profile: StorageProfile {
-                bucket: "dev-and-test".to_string(),
+                bucket: "iceberg-dev-and-test".to_string(),
                 region: "local-01".to_string(),
                 sts_enabled: false,
                 r#type: Type::S3,

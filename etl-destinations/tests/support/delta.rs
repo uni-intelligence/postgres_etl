@@ -20,7 +20,7 @@ const MINIO_BUCKET_ENV_NAME: &str = "TESTS_MINIO_BUCKET";
 const DEFAULT_MINIO_ENDPOINT: &str = "http://localhost:9010";
 const DEFAULT_MINIO_ACCESS_KEY: &str = "minio-admin";
 const DEFAULT_MINIO_SECRET_KEY: &str = "minio-admin-password";
-const DEFAULT_MINIO_BUCKET: &str = "dev-and-test";
+const DEFAULT_MINIO_BUCKET: &str = "delta-dev-and-test";
 
 /// Generates a unique warehouse path for test isolation.
 ///
@@ -72,6 +72,8 @@ impl DeltaLakeDatabase {
             env::set_var("AWS_REGION", "local-01");
             env::set_var("AWS_S3_ALLOW_UNSAFE_RENAME", "true");
             env::set_var("AWS_S3_PATH_STYLE_ACCESS", "true");
+            env::set_var("AWS_USE_HTTPS", "false");
+            env::set_var("AWS_ALLOW_HTTP", "true");
         }
 
         Self {

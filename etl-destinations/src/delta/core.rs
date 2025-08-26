@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, trace};
 
 use crate::delta::{DeltaLakeClient, TableRowEncoder};
 
@@ -116,7 +116,6 @@ where
                 )
             })?;
 
-        // Create or open table
         let table = self
             .client
             .create_table_if_missing(&table_path, &table_schema)
@@ -129,13 +128,11 @@ where
                 )
             })?;
 
-        // Cache the table for future use
         {
             let mut cache = self.table_cache.write().await;
             cache.insert(table_path.clone(), table.clone());
         }
 
-        println!("✅ Delta table ready: {}", table_path);
         Ok(table)
     }
 
@@ -334,7 +331,6 @@ where
                 )
             })?;
 
-        // Convert to Arrow RecordBatch
         let record_batches = TableRowEncoder::encode_table_rows(&table_schema, table_rows.clone())
             .map_err(|e| {
                 etl_error!(
@@ -344,8 +340,7 @@ where
                 )
             })?;
 
-        // Write the data to Delta table
-        println!(
+        trace!(
             "Writing {} rows ({} batches) to Delta table",
             table_rows.len(),
             record_batches.len()
