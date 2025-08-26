@@ -22,6 +22,7 @@ iceberg = [
     "dep:parquet",
     "dep:uuid",
 ]
+deltalake = ["dep:deltalake"]
 
 [dependencies]
 etl = { workspace = true }
@@ -34,6 +35,7 @@ gcp-bigquery-client = { workspace = true, optional = true, features = [
 ] }
 iceberg = { workspace = true, optional = true }
 iceberg-catalog-rest = { workspace = true, optional = true }
+deltalake = { workspace = true, optional = true, features = ["rustls"] }
 parquet = { workspace = true, optional = true, features = ["async", "arrow"] }
 prost = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = [
