@@ -124,3 +124,4 @@ Apache‑2.0. See `LICENSE` for details.
 <p align="center">
   Made with ❤️ by the <a href="https://supabase.com">Supabase</a> team
 </p>
+
