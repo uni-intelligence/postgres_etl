@@ -18,10 +18,10 @@ use crate::delta::{DeltaLakeClient, TableRowEncoder};
 pub struct DeltaDestinationConfig {
     /// Base URI for Delta table storage (e.g., "s3://bucket/warehouse", "file:///tmp/delta")
     pub base_uri: String,
-    /// Optional warehouse path for organizing tables
-    pub warehouse: Option<String>,
+    /// Optional storage options passed to underlying object store
+    pub storage_options: Option<HashMap<String, String>>,
     /// Columns to use for partitioning (per table)
-    pub partition_columns: Option<Vec<String>>,
+    pub partition_columns: Option<HashMap<String, Vec<String>>>,
     /// Run OPTIMIZE every N commits (None = disabled)
     pub optimize_after_commits: Option<NonZeroU64>,
 }
@@ -30,7 +30,7 @@ impl Default for DeltaDestinationConfig {
     fn default() -> Self {
         Self {
             base_uri: "file:///tmp/delta".to_string(),
-            warehouse: None,
+            storage_options: None,
             partition_columns: None,
             optimize_after_commits: None,
         }
@@ -56,7 +56,7 @@ where
     /// Create a new Delta Lake destination
     pub fn new(store: S, config: DeltaDestinationConfig) -> Self {
         Self {
-            client: DeltaLakeClient::new(),
+            client: DeltaLakeClient::new(config.storage_options.clone()),
             store,
             config,
             table_cache: Arc::new(RwLock::new(HashMap::new())),

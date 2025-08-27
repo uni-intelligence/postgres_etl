@@ -4,6 +4,7 @@ use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
 use etl::types::TableName;
 use etl_destinations::delta::{DeltaDestinationConfig, DeltaLakeDestination};
+use std::collections::HashMap;
 use std::env;
 use uuid::Uuid;
 
@@ -64,18 +65,6 @@ impl DeltaLakeDatabase {
         let warehouse_path = random_warehouse_path();
         let s3_base_uri = format!("s3://{}/{}", bucket, warehouse_path);
 
-        // Set up AWS environment for delta-rs to use minio
-        unsafe {
-            env::set_var("AWS_ENDPOINT_URL", &endpoint);
-            env::set_var("AWS_ACCESS_KEY_ID", &access_key);
-            env::set_var("AWS_SECRET_ACCESS_KEY", &secret_key);
-            env::set_var("AWS_REGION", "local-01");
-            env::set_var("AWS_S3_ALLOW_UNSAFE_RENAME", "true");
-            env::set_var("AWS_S3_PATH_STYLE_ACCESS", "true");
-            env::set_var("AWS_USE_HTTPS", "false");
-            env::set_var("AWS_ALLOW_HTTP", "true");
-        }
-
         Self {
             warehouse_path,
             s3_base_uri,
@@ -89,14 +78,27 @@ impl DeltaLakeDatabase {
     /// Creates a [`DeltaLakeDestination`] configured for this database instance.
     ///
     /// Returns a destination suitable for ETL operations, configured with
-    /// the test warehouse location.
+    /// the test warehouse location and appropriate storage options for MinIO.
     pub async fn build_destination<S>(&self, store: S) -> DeltaLakeDestination<S>
     where
         S: StateStore + SchemaStore + Send + Sync,
     {
+        // Create storage options HashMap with AWS-compatible settings for MinIO
+        let mut storage_options = HashMap::new();
+        storage_options.insert("endpoint".to_string(), self.endpoint.clone());
+        storage_options.insert("access_key_id".to_string(), self.access_key.clone());
+        storage_options.insert("secret_access_key".to_string(), self.secret_key.clone());
+        storage_options.insert("region".to_string(), "local-01".to_string());
+        storage_options.insert("allow_http".to_string(), "true".to_string());
+        // Use path-style requests for MinIO compatibility (opposite of virtual hosted style)
+        storage_options.insert(
+            "virtual_hosted_style_request".to_string(),
+            "false".to_string(),
+        );
+
         let config = DeltaDestinationConfig {
             base_uri: self.s3_base_uri.clone(),
-            warehouse: Some(self.warehouse_path.clone()),
+            storage_options: Some(storage_options),
             partition_columns: None,
             optimize_after_commits: None,
         };

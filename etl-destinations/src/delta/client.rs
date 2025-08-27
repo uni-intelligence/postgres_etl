@@ -1,30 +1,43 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::schema::postgres_to_delta_schema;
 use deltalake::arrow::record_batch::RecordBatch;
-use deltalake::{DeltaOps, DeltaResult, DeltaTable, open_table};
+use deltalake::{DeltaOps, DeltaResult, DeltaTable, DeltaTableBuilder, open_table};
 use etl::types::TableSchema;
 
 /// Client for connecting to Delta Lake tables.
 #[derive(Clone)]
-pub struct DeltaLakeClient {}
+pub struct DeltaLakeClient {
+    storage_options: Option<HashMap<String, String>>,
+}
 
 impl Default for DeltaLakeClient {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl DeltaLakeClient {
     /// Create a new client.
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(storage_options: Option<HashMap<String, String>>) -> Self {
+        Self { storage_options }
+    }
+
+    fn get_table_with_storage_options(&self, table_uri: &str) -> DeltaResult<DeltaTableBuilder> {
+        let mut builder = DeltaTableBuilder::from_valid_uri(table_uri)?;
+        if let Some(storage_options) = &self.storage_options {
+            builder = builder.with_storage_options(storage_options.clone());
+        }
+        Ok(builder)
     }
 
     /// Returns true if a Delta table exists at the given uri/path.
     pub async fn table_exists(&self, table_uri: &str) -> bool {
-        open_table(table_uri).await.is_ok()
+        let Ok(builder) = self.get_table_with_storage_options(table_uri) else {
+            return false;
+        };
+        builder.load().await.is_ok()
     }
 
     /// Create a Delta table at `table_uri` if it doesn't exist, using the provided Postgres schema.
@@ -39,7 +52,12 @@ impl DeltaLakeClient {
 
         let delta_schema = postgres_to_delta_schema(table_schema)?;
 
-        let ops = DeltaOps::try_from_uri(table_uri).await?;
+        let ops = if let Some(storage_options) = &self.storage_options {
+            DeltaOps::try_from_uri_with_storage_options(table_uri, storage_options.clone()).await?
+        } else {
+            DeltaOps::try_from_uri(table_uri).await?
+        };
+
         let table = ops
             .create()
             // TODO(abhi): Figure out how to avoid the clone

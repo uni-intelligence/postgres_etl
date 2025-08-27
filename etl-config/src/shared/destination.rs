@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::SerializableSecretString;
@@ -44,9 +46,9 @@ pub enum DestinationConfig {
     },
     DeltaLake {
         base_uri: String,
-        warehouse: Option<String>,
+        storage_options: Option<HashMap<String, String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        partition_columns: Option<Vec<String>>,
+        partition_columns: Option<HashMap<String, Vec<String>>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         optimize_after_commits: Option<u64>,
     },

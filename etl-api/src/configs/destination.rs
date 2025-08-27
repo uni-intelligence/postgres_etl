@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use etl_config::SerializableSecretString;
 use etl_config::shared::DestinationConfig;
 use secrecy::ExposeSecret;
@@ -34,10 +36,10 @@ pub enum FullApiDestinationConfig {
     DeltaLake {
         #[schema(example = "s3://my-bucket/my-path")]
         base_uri: String,
-        #[schema(example = "s3://my-bucket/my-path")]
-        warehouse: Option<String>,
-        #[schema(example = "[\"date\"]")]
-        partition_columns: Option<Vec<String>>,
+        #[schema(example = "{\"aws_access_key_id\": \"https://my-endpoint.com\"}")]
+        storage_options: Option<HashMap<String, String>>,
+        #[schema(example = "{\"my_table\": [\"date\"]}")]
+        partition_columns: Option<HashMap<String, Vec<String>>>,
         #[schema(example = 100)]
         optimize_after_commits: Option<u64>,
     },
@@ -62,12 +64,12 @@ impl From<StoredDestinationConfig> for FullApiDestinationConfig {
             },
             StoredDestinationConfig::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             } => Self::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             },
@@ -88,8 +90,8 @@ pub enum StoredDestinationConfig {
     },
     DeltaLake {
         base_uri: String,
-        warehouse: Option<String>,
-        partition_columns: Option<Vec<String>>,
+        storage_options: Option<HashMap<String, String>>,
+        partition_columns: Option<HashMap<String, Vec<String>>>,
         optimize_after_commits: Option<u64>,
     },
 }
@@ -113,12 +115,12 @@ impl StoredDestinationConfig {
             },
             Self::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             } => DestinationConfig::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             },
@@ -146,12 +148,12 @@ impl From<FullApiDestinationConfig> for StoredDestinationConfig {
             },
             FullApiDestinationConfig::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             } => Self::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             },
@@ -188,12 +190,12 @@ impl Encrypt<EncryptedStoredDestinationConfig> for StoredDestinationConfig {
             }
             Self::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             } => Ok(EncryptedStoredDestinationConfig::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             }),
@@ -215,8 +217,8 @@ pub enum EncryptedStoredDestinationConfig {
     },
     DeltaLake {
         base_uri: String,
-        warehouse: Option<String>,
-        partition_columns: Option<Vec<String>>,
+        storage_options: Option<HashMap<String, String>>,
+        partition_columns: Option<HashMap<String, Vec<String>>>,
         optimize_after_commits: Option<u64>,
     },
 }
@@ -252,12 +254,12 @@ impl Decrypt<StoredDestinationConfig> for EncryptedStoredDestinationConfig {
             }
             Self::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             } => Ok(StoredDestinationConfig::DeltaLake {
                 base_uri,
-                warehouse,
+                storage_options,
                 partition_columns,
                 optimize_after_commits,
             }),

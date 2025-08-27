@@ -70,7 +70,7 @@ pub async fn start_replicator_with_config(
         }
         DestinationConfig::DeltaLake {
             base_uri,
-            warehouse,
+            storage_options,
             partition_columns,
             optimize_after_commits,
         } => {
@@ -78,7 +78,7 @@ pub async fn start_replicator_with_config(
                 state_store.clone(),
                 DeltaDestinationConfig {
                     base_uri: base_uri.clone(),
-                    warehouse: warehouse.clone(),
+                    storage_options: storage_options.clone(),
                     partition_columns: partition_columns.clone(),
                     optimize_after_commits: optimize_after_commits.map(|n| n.try_into().unwrap()),
                 },
@@ -121,12 +121,12 @@ fn log_destination_config(config: &DestinationConfig) {
             )
         }
         DestinationConfig::DeltaLake {
-            base_uri: _,
-            warehouse: _,
+            base_uri,
+            storage_options: _,
             partition_columns: _,
             optimize_after_commits: _,
         } => {
-            debug!("using delta lake destination config");
+            debug!(base_uri = base_uri, "using delta lake destination config");
         }
         _ => unimplemented!("destination config not implemented"),
     }
