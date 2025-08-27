@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 
+use deltalake::{DeltaResult, DeltaTable};
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
 use etl::types::TableName;
-use etl_destinations::delta::{DeltaDestinationConfig, DeltaLakeDestination};
+use etl_destinations::delta::{DeltaDestinationConfig, DeltaLakeClient, DeltaLakeDestination};
 use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Environment variable name for the minio endpoint URL.
@@ -37,7 +39,7 @@ fn random_warehouse_path() -> String {
 /// Provides a unified interface for Delta Lake operations in tests, automatically
 /// handling setup of test warehouse locations using minio as the object storage backend.
 #[allow(unused)]
-pub struct DeltaLakeDatabase {
+pub struct MinioDeltaLakeDatabase {
     warehouse_path: String,
     s3_base_uri: String,
     endpoint: String,
@@ -47,7 +49,7 @@ pub struct DeltaLakeDatabase {
 }
 
 #[allow(unused)]
-impl DeltaLakeDatabase {
+impl MinioDeltaLakeDatabase {
     /// Creates a new Delta Lake database instance.
     ///
     /// Sets up a [`DeltaLakeDatabase`] that connects to minio S3-compatible storage
@@ -90,9 +92,7 @@ impl DeltaLakeDatabase {
         storage_options.insert("endpoint".to_string(), self.endpoint.clone());
         storage_options.insert("access_key_id".to_string(), self.access_key.clone());
         storage_options.insert("secret_access_key".to_string(), self.secret_key.clone());
-        storage_options.insert("region".to_string(), "local-01".to_string());
         storage_options.insert("allow_http".to_string(), "true".to_string());
-        // Use path-style requests for MinIO compatibility (opposite of virtual hosted style)
         storage_options.insert(
             "virtual_hosted_style_request".to_string(),
             "false".to_string(),
@@ -115,9 +115,28 @@ impl DeltaLakeDatabase {
         format!("{}/{}", self.s3_base_uri, table_name.name)
     }
 
+    pub async fn load_table(&self, table_name: &TableName) -> DeltaResult<Arc<DeltaTable>> {
+        let mut storage_options = HashMap::new();
+        storage_options.insert("endpoint".to_string(), self.endpoint.clone());
+        storage_options.insert("access_key_id".to_string(), self.access_key.clone());
+        storage_options.insert("secret_access_key".to_string(), self.secret_key.clone());
+        storage_options.insert("allow_http".to_string(), "true".to_string());
+        storage_options.insert(
+            "virtual_hosted_style_request".to_string(),
+            "false".to_string(),
+        );
+
+        let client = DeltaLakeClient::new(Some(storage_options));
+        client.open_table(&self.get_table_uri(table_name)).await
+    }
+
     /// Returns the warehouse path for this database instance.
     pub fn warehouse_path(&self) -> &str {
         &self.warehouse_path
+    }
+
+    pub fn delete_warehouse(&self) {
+        // TODO(abhi): Implement cleanup of S3 objects if needed
     }
 
     /// Returns the S3 base URI for this database instance.
@@ -126,25 +145,18 @@ impl DeltaLakeDatabase {
     }
 }
 
-impl Drop for DeltaLakeDatabase {
+impl Drop for MinioDeltaLakeDatabase {
     /// Cleans up the test warehouse when the database instance is dropped.
     ///
     /// Note: For now, we rely on minio's lifecycle policies or manual cleanup
     /// to remove test data. In a production test environment, you might want
     /// to implement explicit cleanup here.
     fn drop(&mut self) {
-        // TODO: Implement cleanup of S3 objects if needed
-        // This could involve listing and deleting all objects under the warehouse path
-        // For now, we rely on the test isolation provided by unique warehouse paths
+        self.delete_warehouse();
     }
 }
 
 /// Sets up a Delta Lake database connection for testing.
-///
-/// Connects to minio S3-compatible storage using either environment variables
-/// or default values for local docker-compose setup.
-///
-/// Creates a fresh warehouse location for test isolation.
-pub async fn setup_delta_connection() -> DeltaLakeDatabase {
-    DeltaLakeDatabase::new().await
+pub async fn setup_delta_connection() -> MinioDeltaLakeDatabase {
+    MinioDeltaLakeDatabase::new().await
 }

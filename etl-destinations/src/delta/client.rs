@@ -69,7 +69,10 @@ impl DeltaLakeClient {
 
     /// Open a Delta table at `table_uri`.
     pub async fn open_table(&self, table_uri: &str) -> DeltaResult<Arc<DeltaTable>> {
-        let table = open_table(table_uri).await?;
+        let table = self
+            .get_table_with_storage_options(table_uri)?
+            .load()
+            .await?;
         Ok(Arc::new(table))
     }
 
