@@ -250,7 +250,7 @@ where
         &self,
         table_id: TableId,
         upserts_by_pk: &HashMap<String, TableRow>,
-        delete_pks: &HashSet<String>,
+        _delete_pks: &HashSet<String>,
     ) -> EtlResult<()> {
         // todo(abhi): Implement the transaction logic from PLAN.md
         // todo(abhi): Delete rows with PK in affected set
@@ -281,6 +281,7 @@ where
     }
 
     /// Run table optimization (OPTIMIZE)
+    #[allow(unused)]
     async fn optimize_table(&self, _table_path: &str) -> EtlResult<()> {
         // todo(abhi): Implement OPTIMIZE operation using delta-rs
         // todo(abhi): Small file compaction and Z-ordering

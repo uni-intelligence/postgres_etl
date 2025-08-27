@@ -36,6 +36,7 @@ fn random_warehouse_path() -> String {
 ///
 /// Provides a unified interface for Delta Lake operations in tests, automatically
 /// handling setup of test warehouse locations using minio as the object storage backend.
+#[allow(unused)]
 pub struct DeltaLakeDatabase {
     warehouse_path: String,
     s3_base_uri: String,
@@ -45,6 +46,7 @@ pub struct DeltaLakeDatabase {
     bucket: String,
 }
 
+#[allow(unused)]
 impl DeltaLakeDatabase {
     /// Creates a new Delta Lake database instance.
     ///
@@ -145,39 +147,4 @@ impl Drop for DeltaLakeDatabase {
 /// Creates a fresh warehouse location for test isolation.
 pub async fn setup_delta_connection() -> DeltaLakeDatabase {
     DeltaLakeDatabase::new().await
-}
-
-/// Test data structures for Delta Lake integration tests
-/// These mirror the BigQuery test structures but are designed for Delta Lake
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DeltaUser {
-    pub id: i32,
-    pub name: String,
-    pub age: i32,
-}
-
-impl DeltaUser {
-    pub fn new(id: i32, name: &str, age: i32) -> Self {
-        Self {
-            id,
-            name: name.to_owned(),
-            age,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DeltaOrder {
-    pub id: i32,
-    pub description: String,
-}
-
-impl DeltaOrder {
-    pub fn new(id: i32, description: &str) -> Self {
-        Self {
-            id,
-            description: description.to_owned(),
-        }
-    }
 }

@@ -124,7 +124,7 @@ impl DeltaLakeClient {
         table: Arc<DeltaTable>,
         delete_predicate: Option<&str>,
         record_batches: Vec<RecordBatch>,
-        app_transaction_id: Option<&str>,
+        _app_transaction_id: Option<&str>,
     ) -> DeltaResult<Arc<DeltaTable>> {
         // todo(abhi): Implement atomic delete+append transaction
         // todo(abhi): Use Delta transaction features for atomicity
@@ -162,6 +162,7 @@ impl DeltaLakeClient {
     }
 
     /// Run OPTIMIZE operation on the table
+    #[allow(unused)]
     pub async fn optimize_table(
         &self,
         table: Arc<DeltaTable>,

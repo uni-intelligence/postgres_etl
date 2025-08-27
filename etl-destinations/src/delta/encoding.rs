@@ -44,12 +44,11 @@ impl TableRowEncoder {
 
         let arrow_schema = Schema::new(fields);
 
-        let result = RecordBatch::try_new(Arc::new(arrow_schema), arrays);
-
-        result
+        RecordBatch::try_new(Arc::new(arrow_schema), arrays)
     }
 
     /// Convert Delta schema to Arrow schema
+    #[allow(unused)]
     fn delta_schema_to_arrow(
         delta_schema: &deltalake::kernel::StructType,
     ) -> Result<Schema, ArrowError> {
@@ -60,24 +59,24 @@ impl TableRowEncoder {
             .fields()
             .map(|field| {
                 // Convert Delta DataType to Arrow DataType
-                let arrow_type = match field.data_type() {
-                    &deltalake::kernel::DataType::BOOLEAN => DataType::Boolean,
-                    &deltalake::kernel::DataType::STRING => DataType::Utf8,
-                    &deltalake::kernel::DataType::INTEGER => DataType::Int32,
-                    &deltalake::kernel::DataType::LONG => DataType::Int64,
-                    &deltalake::kernel::DataType::SHORT => DataType::Int16,
-                    &deltalake::kernel::DataType::FLOAT => DataType::Float32,
-                    &deltalake::kernel::DataType::DOUBLE => DataType::Float64,
-                    &deltalake::kernel::DataType::DATE => DataType::Date32,
-                    &deltalake::kernel::DataType::TIMESTAMP => DataType::Timestamp(
+                let arrow_type = match *field.data_type() {
+                    deltalake::kernel::DataType::BOOLEAN => DataType::Boolean,
+                    deltalake::kernel::DataType::STRING => DataType::Utf8,
+                    deltalake::kernel::DataType::INTEGER => DataType::Int32,
+                    deltalake::kernel::DataType::LONG => DataType::Int64,
+                    deltalake::kernel::DataType::SHORT => DataType::Int16,
+                    deltalake::kernel::DataType::FLOAT => DataType::Float32,
+                    deltalake::kernel::DataType::DOUBLE => DataType::Float64,
+                    deltalake::kernel::DataType::DATE => DataType::Date32,
+                    deltalake::kernel::DataType::TIMESTAMP => DataType::Timestamp(
                         deltalake::arrow::datatypes::TimeUnit::Microsecond,
                         Some("UTC".into()),
                     ),
-                    &deltalake::kernel::DataType::TIMESTAMP_NTZ => DataType::Timestamp(
+                    deltalake::kernel::DataType::TIMESTAMP_NTZ => DataType::Timestamp(
                         deltalake::arrow::datatypes::TimeUnit::Microsecond,
                         None,
                     ),
-                    &deltalake::kernel::DataType::BINARY => DataType::Binary,
+                    deltalake::kernel::DataType::BINARY => DataType::Binary,
                     // Default to string for complex/unsupported types
                     _ => DataType::Utf8,
                 };
@@ -184,6 +183,7 @@ impl TableRowEncoder {
     }
 
     /// Convert Cell values to specific Arrow array types
+    #[allow(unused)]
     fn convert_bool_column(cells: Vec<&Cell>) -> Result<ArrayRef, ArrowError> {
         // todo(abhi): Extract boolean values from cells, handle nulls
         let values: Vec<Option<bool>> = cells
@@ -198,6 +198,7 @@ impl TableRowEncoder {
         Ok(Arc::new(BooleanArray::from(values)))
     }
 
+    #[allow(unused)]
     fn convert_string_column(cells: Vec<&Cell>) -> Result<ArrayRef, ArrowError> {
         // todo(abhi): Extract string values from cells, handle nulls and conversions
         let values: Vec<Option<String>> = cells
@@ -213,6 +214,7 @@ impl TableRowEncoder {
         Ok(Arc::new(StringArray::from(values)))
     }
 
+    #[allow(unused)]
     fn convert_int32_column(cells: Vec<&Cell>) -> Result<ArrayRef, ArrowError> {
         // todo(abhi): Extract i32 values from cells, handle nulls and conversions
         let values: Vec<Option<i32>> = cells
@@ -228,6 +230,7 @@ impl TableRowEncoder {
         Ok(Arc::new(Int32Array::from(values)))
     }
 
+    #[allow(unused)]
     fn convert_array_column(cells: Vec<&Cell>) -> Result<ArrayRef, ArrowError> {
         // todo(abhi): Convert ArrayCell variants to Arrow ListArray
         // todo(abhi): Handle nested arrays properly with element type detection
