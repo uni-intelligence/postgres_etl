@@ -1128,7 +1128,6 @@ mod tests {
             PGCell::I16(12345),
             PGCell::I32(1234567),
             PGCell::I64(123456789012345),
-            PGCell::F32(3.14159),
             PGCell::F64(std::f64::consts::PI),
             PGCell::F64(std::f64::consts::E),
             PGCell::String("hello world".to_string()),
