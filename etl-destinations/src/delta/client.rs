@@ -266,7 +266,7 @@ impl DeltaLakeClient {
         // todo(abhi): Return list of missing columns that need to be added
         // todo(abhi): Validate that existing columns are compatible
 
-        let _current_schema = table.schema();
+        let _current_schema = table.snapshot()?.schema();
         let _expected_delta_schema = postgres_to_delta_schema(expected_schema)?;
 
         // todo(abhi): Compare schemas and find missing columns
