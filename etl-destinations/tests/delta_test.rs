@@ -12,6 +12,8 @@ use etl_telemetry::tracing::init_test_tracing;
 use rand::random;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use etl::types::PgNumeric;
+use std::str::FromStr;
 
 use deltalake::DeltaTableError;
 use deltalake::arrow::array::RecordBatch;
@@ -784,6 +786,183 @@ async fn table_creation_and_schema_evolution() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn decimal_precision_scale_mapping() {
+    init_test_tracing();
+
+    let database = spawn_source_database().await;
+    let delta_database = setup_delta_connection().await;
+    let table_name = test_table_name("decimal_precision_test");
+
+    let columns = vec![
+        ("id", "bigint primary key"),
+        ("price", "numeric(10,2)"),     // NUMERIC(10,2) -> DECIMAL(10,2)
+        ("percentage", "numeric(5,4)"), // NUMERIC(5,4) -> DECIMAL(5,4)
+        ("large_number", "numeric(18,6)"), // NUMERIC(18,6) -> DECIMAL(18,6)
+        ("currency", "numeric(15,3)"),  // NUMERIC(15,3) -> DECIMAL(15,3)
+    ];
+
+    let table_id = database
+        .create_table(table_name.clone(), false, &columns)
+        .await
+        .unwrap();
+
+    let store = NotifyingStore::new();
+    let raw_destination = delta_database.build_destination(store.clone()).await;
+    let destination = TestDestinationWrapper::wrap(raw_destination);
+
+    let publication_name = "test_pub_decimal".to_string();
+    database
+        .create_publication(&publication_name, std::slice::from_ref(&table_name))
+        .await
+        .expect("Failed to create publication");
+
+    let pipeline_id: PipelineId = random();
+    let mut pipeline = create_pipeline(
+        &database.config,
+        pipeline_id,
+        publication_name,
+        store.clone(),
+        destination.clone(),
+    );
+
+    let table_sync_done_notification = store
+        .notify_on_table_state(table_id, TableReplicationPhaseType::SyncDone)
+        .await;
+
+    pipeline.start().await.unwrap();
+    table_sync_done_notification.notified().await;
+
+    let event_notify = destination
+        .wait_for_events_count(vec![(EventType::Insert, 2)])
+        .await;
+
+    database
+        .insert_values(
+            table_name.clone(),
+            &["id", "price", "percentage", "large_number", "currency"],
+            &[
+                &1i64,
+                &PgNumeric::from_str("123.45").unwrap(), // NUMERIC(10,2)
+                &PgNumeric::from_str("0.9876").unwrap(), // NUMERIC(5,4)
+                &PgNumeric::from_str("1234567.123456").unwrap(), // NUMERIC(18,6)
+                &PgNumeric::from_str("9999.999").unwrap(), // NUMERIC(15,3)
+            ],
+        )
+        .await
+        .unwrap();
+
+    database
+        .insert_values(
+            table_name.clone(),
+            &["id", "price", "percentage", "large_number", "currency"],
+            &[
+                &2i64,
+                &PgNumeric::from_str("999.99").unwrap(), // NUMERIC(10,2)
+                &PgNumeric::from_str("0.0001").unwrap(), // NUMERIC(5,4)
+                &PgNumeric::from_str("999999.999999").unwrap(), // NUMERIC(18,6)
+                &PgNumeric::from_str("12345.678").unwrap(), // NUMERIC(15,3)
+            ],
+        )
+        .await
+        .unwrap();
+
+    event_notify.notified().await;
+    pipeline.shutdown_and_wait().await.unwrap();
+
+    let table_name_ref = &table_name;
+    delta_verification::verify_table_exists(&delta_database, table_name_ref)
+        .await
+        .expect("Decimal test table should exist in Delta Lake");
+
+    delta_verification::verify_table_schema(
+        &delta_database,
+        table_name_ref,
+        &[
+            ("id", DeltaDataType::LONG, false),
+            ("price", DeltaDataType::decimal(10, 2).unwrap(), true), // NUMERIC(10,2)
+            ("percentage", DeltaDataType::decimal(5, 4).unwrap(), true), // NUMERIC(5,4)
+            ("large_number", DeltaDataType::decimal(18, 6).unwrap(), true), // NUMERIC(18,6)
+            ("currency", DeltaDataType::decimal(15, 3).unwrap(), true), // NUMERIC(15,3)
+        ],
+    )
+    .await
+    .expect("Decimal test table should have correct precision and scale mapping");
+
+    let row_count = delta_verification::count_table_rows(&delta_database, table_name_ref)
+        .await
+        .expect("Should be able to count rows");
+    println!("Decimal precision test row count: {}", row_count);
+    assert_eq!(
+        row_count, 2,
+        "Decimal test table should have exactly 2 rows"
+    );
+
+    let batches = delta_verification::read_table_data(&delta_database, table_name_ref)
+        .await
+        .expect("Should be able to read decimal data");
+
+    assert!(!batches.is_empty(), "Should have record batches");
+
+    let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(
+        total_rows, 2,
+        "Should have exactly 2 rows total across all batches"
+    );
+
+    if let Some(batch) = batches.first() {
+        assert_eq!(batch.num_columns(), 5, "Should have 5 columns");
+
+        let schema = batch.schema();
+
+        for field in schema.fields() {
+            match field.name().as_str() {
+                "price" => {
+                    if let deltalake::arrow::datatypes::DataType::Decimal128(precision, scale) =
+                        field.data_type()
+                    {
+                        assert_eq!(*precision, 10, "Price should have precision 10");
+                        assert_eq!(*scale, 2, "Price should have scale 2");
+                    } else {
+                        panic!("Price column should be Decimal128");
+                    }
+                }
+                "percentage" => {
+                    if let deltalake::arrow::datatypes::DataType::Decimal128(precision, scale) =
+                        field.data_type()
+                    {
+                        assert_eq!(*precision, 5, "Percentage should have precision 5");
+                        assert_eq!(*scale, 4, "Percentage should have scale 4");
+                    } else {
+                        panic!("Percentage column should be Decimal128");
+                    }
+                }
+                "large_number" => {
+                    if let deltalake::arrow::datatypes::DataType::Decimal128(precision, scale) =
+                        field.data_type()
+                    {
+                        assert_eq!(*precision, 18, "Large_number should have precision 18");
+                        assert_eq!(*scale, 6, "Large_number should have scale 6");
+                    } else {
+                        panic!("Large_number column should be Decimal128");
+                    }
+                }
+                "currency" => {
+                    if let deltalake::arrow::datatypes::DataType::Decimal128(precision, scale) =
+                        field.data_type()
+                    {
+                        assert_eq!(*precision, 15, "Currency should have precision 15");
+                        assert_eq!(*scale, 3, "Currency should have scale 3");
+                    } else {
+                        panic!("Currency column should be Decimal128");
+                    }
+                }
+                _ => {} // Skip other columns
+            }
+        }
+    }
+}
+
 /// Test comprehensive data type mapping from Postgres to Delta Lake
 #[tokio::test(flavor = "multi_thread")]
 async fn comprehensive_data_type_mapping() {
@@ -803,8 +982,7 @@ async fn comprehensive_data_type_mapping() {
         ("created_at", "timestamp"),  // TIMESTAMP -> TIMESTAMP_NTZ (no timezone)
         ("updated_at", "timestamptz"), // TIMESTAMPTZ -> TIMESTAMP (with timezone)
         ("profile_data", "bytea"),    // BYTEA -> BINARY
-                                      //("salary", "numeric(10,2)"), // NUMERIC -> DECIMAL
-                                      // TODO(abhi): Decimal type is currently causing hangs
+        ("salary", "numeric(10,2)"),  // NUMERIC -> DECIMAL
     ];
 
     let table_id = database
@@ -868,6 +1046,7 @@ async fn comprehensive_data_type_mapping() {
                 "created_at",
                 "updated_at",
                 "profile_data",
+                "salary",
             ],
             &[
                 &1i64,
@@ -879,6 +1058,7 @@ async fn comprehensive_data_type_mapping() {
                 &created_at,
                 &updated_at,
                 &profile_data,
+                &PgNumeric::from_str("12345.6789").unwrap(),
             ],
         )
         .await
@@ -906,7 +1086,7 @@ async fn comprehensive_data_type_mapping() {
             ("created_at", DeltaDataType::TIMESTAMP_NTZ, true), // TIMESTAMP -> TIMESTAMP_NTZ (no timezone)
             ("updated_at", DeltaDataType::TIMESTAMP, true), // TIMESTAMPTZ -> TIMESTAMP (with timezone)
             ("profile_data", DeltaDataType::BINARY, true),
-            //("salary", DeltaDataType::decimal(38, 18).unwrap(), true),
+            ("salary", DeltaDataType::decimal(10, 2).unwrap(), true),
         ],
     )
     .await
@@ -952,7 +1132,7 @@ async fn comprehensive_data_type_mapping() {
             "created_at",
             "updated_at",
             "profile_data",
-            //"salary",
+            "salary",
         ];
 
         for col in &expected_columns {

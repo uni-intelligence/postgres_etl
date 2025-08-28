@@ -20,6 +20,30 @@ use etl::types::{
 use etl::types::{DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TIMESTAMPTZ_FORMAT_HH_MM};
 use std::sync::Arc;
 
+/// Extract numeric precision from Postgres atttypmod
+/// Based on: https://stackoverflow.com/questions/72725508/how-to-calculate-numeric-precision-and-other-vals-from-atttypmod
+fn extract_numeric_precision(atttypmod: i32) -> u8 {
+    if atttypmod == -1 {
+        // No limit specified, use maximum precision
+        38
+    } else {
+        let precision = ((atttypmod - 4) >> 16) & 65535;
+        std::cmp::min(precision as u8, 38) // Cap at Arrow's max precision
+    }
+}
+
+/// Extract numeric scale from Postgres atttypmod
+/// Based on: https://stackoverflow.com/questions/72725508/how-to-calculate-numeric-precision-and-other-vals-from-atttypmod
+fn extract_numeric_scale(atttypmod: i32) -> i8 {
+    if atttypmod == -1 {
+        // No limit specified, use reasonable default scale
+        18
+    } else {
+        let scale = (atttypmod - 4) & 65535;
+        std::cmp::min(scale as i8, 38) // Cap at reasonable scale
+    }
+}
+
 /// Converts TableRows to Arrow RecordBatch for Delta Lake writes
 pub struct TableRowEncoder;
 
@@ -58,7 +82,8 @@ impl TableRowEncoder {
             .column_schemas
             .iter()
             .map(|col_schema| {
-                let data_type = Self::postgres_type_to_arrow_type(&col_schema.typ);
+                let data_type =
+                    Self::postgres_type_to_arrow_type(&col_schema.typ, col_schema.modifier);
                 ArrowField::new(&col_schema.name, data_type, col_schema.nullable)
             })
             .collect();
@@ -67,7 +92,7 @@ impl TableRowEncoder {
     }
 
     /// Map Postgres types to appropriate Arrow types
-    pub(crate) fn postgres_type_to_arrow_type(pg_type: &PGType) -> ArrowDataType {
+    pub(crate) fn postgres_type_to_arrow_type(pg_type: &PGType, modifier: i32) -> ArrowDataType {
         match *pg_type {
             // Boolean types
             PGType::BOOL => ArrowDataType::Boolean,
@@ -132,15 +157,20 @@ impl TableRowEncoder {
                 ArrowDataType::Float64,
                 true,
             ))),
-
-            // Decimal types - use high precision for NUMERIC
-            PGType::NUMERIC => ArrowDataType::Decimal128(38, 18), // Max precision, reasonable scale
-            PGType::NUMERIC_ARRAY => ArrowDataType::List(Arc::new(ArrowField::new(
-                "item",
-                ArrowDataType::Decimal128(38, 18),
-                true,
-            ))),
-
+            PGType::NUMERIC => {
+                let precision = extract_numeric_precision(modifier);
+                let scale = extract_numeric_scale(modifier);
+                ArrowDataType::Decimal128(precision, scale)
+            }
+            PGType::NUMERIC_ARRAY => {
+                let precision = extract_numeric_precision(modifier);
+                let scale = extract_numeric_scale(modifier);
+                ArrowDataType::List(Arc::new(ArrowField::new(
+                    "item",
+                    ArrowDataType::Decimal128(precision, scale),
+                    true,
+                )))
+            }
             // Date/Time types
             PGType::DATE => ArrowDataType::Date32,
             PGType::DATE_ARRAY => ArrowDataType::List(Arc::new(ArrowField::new(
@@ -624,39 +654,38 @@ impl TableRowEncoder {
     /// Convert cells to decimal128 array
     fn convert_to_decimal128_array(
         cells: Vec<&PGCell>,
-        _precision: u8,
-        _scale: i8,
+        precision: u8,
+        scale: i8,
     ) -> Result<ArrayRef, ArrowError> {
         let values: Vec<Option<i128>> = cells
             .iter()
             .map(|cell| match cell {
                 PGCell::Null => None,
                 PGCell::Numeric(n) => {
-                    // Convert PgNumeric to decimal128
                     // This is a simplified conversion - ideally we'd preserve the exact decimal representation
                     if let Ok(string_val) = n.to_string().parse::<f64>() {
                         // Scale up by the scale factor and convert to i128
-                        let scaled = (string_val * 10_f64.powi(_scale as i32)) as i128;
+                        let scaled = (string_val * 10_f64.powi(scale as i32)) as i128;
                         Some(scaled)
                     } else {
                         None
                     }
                 }
-                PGCell::I16(i) => Some(*i as i128 * 10_i128.pow(_scale as u32)),
-                PGCell::I32(i) => Some(*i as i128 * 10_i128.pow(_scale as u32)),
-                PGCell::I64(i) => Some(*i as i128 * 10_i128.pow(_scale as u32)),
-                PGCell::U32(i) => Some(*i as i128 * 10_i128.pow(_scale as u32)),
+                PGCell::I16(i) => Some(*i as i128 * 10_i128.pow(scale as u32)),
+                PGCell::I32(i) => Some(*i as i128 * 10_i128.pow(scale as u32)),
+                PGCell::I64(i) => Some(*i as i128 * 10_i128.pow(scale as u32)),
+                PGCell::U32(i) => Some(*i as i128 * 10_i128.pow(scale as u32)),
                 PGCell::F32(f) => {
-                    let scaled = (*f as f64 * 10_f64.powi(_scale as i32)) as i128;
+                    let scaled = (*f as f64 * 10_f64.powi(scale as i32)) as i128;
                     Some(scaled)
                 }
                 PGCell::F64(f) => {
-                    let scaled = (f * 10_f64.powi(_scale as i32)) as i128;
+                    let scaled = (f * 10_f64.powi(scale as i32)) as i128;
                     Some(scaled)
                 }
                 PGCell::String(s) => {
                     if let Ok(val) = s.parse::<f64>() {
-                        let scaled = (val * 10_f64.powi(_scale as i32)) as i128;
+                        let scaled = (val * 10_f64.powi(scale as i32)) as i128;
                         Some(scaled)
                     } else {
                         None
@@ -665,7 +694,11 @@ impl TableRowEncoder {
                 _ => None,
             })
             .collect();
-        Ok(Arc::new(Decimal128Array::from(values)))
+
+        let decimal_type = ArrowDataType::Decimal128(precision, scale);
+        Ok(Arc::new(
+            Decimal128Array::from(values).with_data_type(decimal_type),
+        ))
     }
 
     /// Convert cells to list array for array types
@@ -714,7 +747,7 @@ impl TableRowEncoder {
 /// Convert a Postgres type to Delta DataType using delta-kernel's conversion traits
 #[allow(dead_code)]
 pub(crate) fn postgres_type_to_delta(typ: &PGType) -> Result<DeltaDataType, ArrowError> {
-    let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(typ);
+    let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(typ, -1);
     DeltaDataType::try_from_arrow(&arrow_type)
 }
 
@@ -724,7 +757,7 @@ pub(crate) fn postgres_to_delta_schema(schema: &PGTableSchema) -> DeltaResult<De
         .column_schemas
         .iter()
         .map(|col| {
-            let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(&col.typ);
+            let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(&col.typ, col.modifier);
             let delta_data_type = DeltaDataType::try_from_arrow(&arrow_type)
                 .map_err(|e| deltalake::DeltaTableError::Generic(e.to_string()))?;
             Ok(DeltaStructField::new(
@@ -741,6 +774,7 @@ pub(crate) fn postgres_to_delta_schema(schema: &PGTableSchema) -> DeltaResult<De
 #[cfg(test)]
 mod tests {
     use super::*;
+    use delta_kernel::schema::{DecimalType, PrimitiveType};
 
     #[test]
     fn test_scalar_mappings() {
@@ -781,11 +815,10 @@ mod tests {
             postgres_type_to_delta(&PGType::BYTEA).unwrap(),
             DeltaDataType::BINARY
         ));
-        // Test NUMERIC mapping - delta-kernel should handle the conversion
-        let numeric_result = postgres_type_to_delta(&PGType::NUMERIC).unwrap();
-        // The actual result depends on delta-kernel's conversion implementation
-        // For now, just verify the conversion succeeds
-        println!("NUMERIC maps to: {:?}", numeric_result);
+        assert!(matches!(
+            postgres_type_to_delta(&PGType::NUMERIC).unwrap(),
+            DeltaDataType::Primitive(PrimitiveType::Decimal(DecimalType { .. }))
+        ));
     }
 
     #[test]
@@ -882,7 +915,7 @@ mod tests {
             );
 
             // Test that we can convert back to Arrow
-            let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(&pg_type);
+            let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(&pg_type, -1);
             let roundtrip_delta = DeltaDataType::try_from_arrow(&arrow_type);
             assert!(
                 roundtrip_delta.is_ok(),
@@ -922,44 +955,78 @@ mod tests {
     }
 
     #[test]
+    fn test_decimal_precision_scale_extraction() {
+        // Test specific atttypmod values from the Stack Overflow example
+        // https://stackoverflow.com/questions/72725508/how-to-calculate-numeric-precision-and-other-vals-from-atttypmod
+
+        // NUMERIC(5,2) -> atttypmod = 327686
+        assert_eq!(extract_numeric_precision(327686), 5);
+        assert_eq!(extract_numeric_scale(327686), 2);
+
+        // NUMERIC(5,1) -> atttypmod = 327685
+        assert_eq!(extract_numeric_precision(327685), 5);
+        assert_eq!(extract_numeric_scale(327685), 1);
+
+        // NUMERIC(6,3) -> atttypmod = 393223
+        assert_eq!(extract_numeric_precision(393223), 6);
+        assert_eq!(extract_numeric_scale(393223), 3);
+
+        // NUMERIC(4,4) -> atttypmod = 262152
+        assert_eq!(extract_numeric_precision(262152), 4);
+        assert_eq!(extract_numeric_scale(262152), 4);
+
+        // Test -1 (no limit)
+        assert_eq!(extract_numeric_precision(-1), 38); // Max precision
+        assert_eq!(extract_numeric_scale(-1), 18); // Default scale
+
+        let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(&PGType::NUMERIC, 327686);
+        if let ArrowDataType::Decimal128(precision, scale) = arrow_type {
+            assert_eq!(precision, 5);
+            assert_eq!(scale, 2);
+        } else {
+            panic!("Expected Decimal128 type, got: {:?}", arrow_type);
+        }
+    }
+
+    #[test]
     fn test_postgres_type_to_arrow_type_mapping() {
         // Test basic types
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::BOOL),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::BOOL, -1),
             ArrowDataType::Boolean
         );
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::INT4),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::INT4, -1),
             ArrowDataType::Int32
         );
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::INT8),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::INT8, -1),
             ArrowDataType::Int64
         );
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::FLOAT8),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::FLOAT8, -1),
             ArrowDataType::Float64
         );
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::TEXT),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::TEXT, -1),
             ArrowDataType::Utf8
         );
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::DATE),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::DATE, -1),
             ArrowDataType::Date32
         );
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::TIME),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::TIME, -1),
             ArrowDataType::Timestamp(TimeUnit::Microsecond, None)
         );
         assert_eq!(
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::BYTEA),
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::BYTEA, -1),
             ArrowDataType::Binary
         );
 
         // Test array types
         if let ArrowDataType::List(field) =
-            TableRowEncoder::postgres_type_to_arrow_type(&PGType::INT4_ARRAY)
+            TableRowEncoder::postgres_type_to_arrow_type(&PGType::INT4_ARRAY, -1)
         {
             assert_eq!(*field.data_type(), ArrowDataType::Int32);
         } else {
