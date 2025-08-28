@@ -14,8 +14,8 @@ use deltalake::arrow::datatypes::{
 use deltalake::arrow::error::ArrowError;
 use deltalake::arrow::record_batch::RecordBatch;
 use etl::types::{
-    ArrayCell as PGArrayCell, Cell as PGCell, TableRow as PGTableRow, TableSchema as PGTableSchema,
-    Type as PGType,
+    ArrayCell as PGArrayCell, Cell as PGCell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT,
+    TIMESTAMPTZ_FORMAT_HH_MM, TableRow as PGTableRow, TableSchema as PGTableSchema, Type as PGType,
 };
 use etl::types::{DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TIMESTAMPTZ_FORMAT_HH_MM};
 use std::sync::Arc;
@@ -1129,7 +1129,8 @@ mod tests {
             PGCell::I32(1234567),
             PGCell::I64(123456789012345),
             PGCell::F32(3.14159),
-            PGCell::F64(2.71828182845904),
+            PGCell::F64(std::f64::consts::PI),
+            PGCell::F64(std::f64::consts::E),
             PGCell::String("hello world".to_string()),
             PGCell::Date(date),
             PGCell::Time(time),
