@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::schema::postgres_to_delta_schema;
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::{DeltaOps, DeltaResult, DeltaTable, DeltaTableBuilder, open_table};
-use etl::types::{TableSchema, TableRow, Cell};
+use etl::types::{Cell, TableRow, TableSchema};
 
 /// Client for connecting to Delta Lake tables.
 #[derive(Clone)]
@@ -246,7 +246,7 @@ impl DeltaLakeClient {
                         // Malformed composite key, skip
                         return "false".to_string();
                     }
-                    
+
                     let conditions: Vec<String> = pk_column_names
                         .iter()
                         .zip(key_parts.iter())
@@ -258,7 +258,7 @@ impl DeltaLakeClient {
                             )
                         })
                         .collect();
-                    
+
                     format!("({})", conditions.join(" AND "))
                 })
                 .filter(|cond| cond != "false") // Remove malformed conditions
@@ -386,7 +386,7 @@ impl DeltaLakeClient {
             Cell::Bytes(b) => {
                 let hex_string: String = b.iter().map(|byte| format!("{:02x}", byte)).collect();
                 format!("\\x{}", hex_string)
-            },
+            }
             Cell::Array(_) => "[ARRAY]".to_string(), // Arrays shouldn't be PKs
         }
     }
@@ -414,7 +414,7 @@ impl DeltaLakeClient {
         let mut parts = Vec::new();
         let mut current_part = String::new();
         let mut chars = composite_key.chars().peekable();
-        
+
         while let Some(ch) = chars.next() {
             if ch == ':' {
                 if chars.peek() == Some(&':') {
@@ -437,12 +437,12 @@ impl DeltaLakeClient {
                 current_part.push(ch);
             }
         }
-        
+
         // Add the final part
         if !current_part.is_empty() || !parts.is_empty() {
             parts.push(current_part);
         }
-        
+
         parts
     }
 
@@ -472,7 +472,7 @@ impl DeltaLakeClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use etl::types::{ColumnSchema, TableName, Type, Cell, TableId, TableRow, TableSchema};
+    use etl::types::{Cell, ColumnSchema, TableId, TableName, TableRow, TableSchema, Type};
 
     fn create_test_schema() -> TableSchema {
         TableSchema::new(
@@ -486,10 +486,7 @@ mod tests {
     }
 
     fn create_test_row(id: i32, name: &str) -> TableRow {
-        TableRow::new(vec![
-            Cell::I32(id),
-            Cell::String(name.to_string()),
-        ])
+        TableRow::new(vec![Cell::I32(id), Cell::String(name.to_string())])
     }
 
     #[test]
@@ -509,7 +506,7 @@ mod tests {
         let mut schema = create_test_schema();
         // Make both columns primary keys
         schema.column_schemas[1].primary = true;
-        
+
         let row = create_test_row(42, "test");
 
         let result = client.extract_primary_key(&row, &schema);
@@ -523,10 +520,10 @@ mod tests {
         let mut keys = HashSet::new();
         keys.insert("42".to_string());
         keys.insert("43".to_string());
-        
+
         let pk_columns = vec!["id".to_string()];
         let predicate = client.build_pk_predicate(&keys, &pk_columns);
-        
+
         // Should be `id` IN ('42', '43') - order may vary
         assert!(predicate.contains("`id` IN"));
         assert!(predicate.contains("'42'"));
@@ -539,10 +536,10 @@ mod tests {
         let mut keys = HashSet::new();
         keys.insert("42::test".to_string());
         keys.insert("43::hello".to_string());
-        
+
         let pk_columns = vec!["id".to_string(), "name".to_string()];
         let predicate = client.build_pk_predicate(&keys, &pk_columns);
-        
+
         // Should be (`id` = '42' AND `name` = 'test') OR (`id` = '43' AND `name` = 'hello')
         assert!(predicate.contains("`id` = '42' AND `name` = 'test'"));
         assert!(predicate.contains("`id` = '43' AND `name` = 'hello'"));
@@ -554,7 +551,7 @@ mod tests {
         let client = DeltaLakeClient::new(None);
         let keys = HashSet::new();
         let pk_columns = vec!["id".to_string()];
-        
+
         let predicate = client.build_pk_predicate(&keys, &pk_columns);
         assert_eq!(predicate, "false");
     }
@@ -564,7 +561,7 @@ mod tests {
         let parts = vec!["value::with::delimiter".to_string(), "normal".to_string()];
         let composite = DeltaLakeClient::join_composite_key(&parts);
         assert_eq!(composite, "value::::with::::delimiter::normal");
-        
+
         let split_parts = DeltaLakeClient::split_composite_key(&composite);
         assert_eq!(split_parts, parts);
     }
@@ -572,12 +569,18 @@ mod tests {
     #[test]
     fn test_escape_identifier() {
         assert_eq!(DeltaLakeClient::escape_identifier("normal"), "`normal`");
-        assert_eq!(DeltaLakeClient::escape_identifier("with`backtick"), "`with``backtick`");
+        assert_eq!(
+            DeltaLakeClient::escape_identifier("with`backtick"),
+            "`with``backtick`"
+        );
     }
 
     #[test]
     fn test_escape_string_literal() {
         assert_eq!(DeltaLakeClient::escape_string_literal("normal"), "'normal'");
-        assert_eq!(DeltaLakeClient::escape_string_literal("with'quote"), "'with''quote'");
+        assert_eq!(
+            DeltaLakeClient::escape_string_literal("with'quote"),
+            "'with''quote'"
+        );
     }
 }

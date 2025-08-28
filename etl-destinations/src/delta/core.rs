@@ -177,15 +177,12 @@ where
             }
         }
 
-        info!(
-            "Processing events for {} tables",
-            events_by_table.len()
-        );
+        info!("Processing events for {} tables", events_by_table.len());
 
         // Process each table's events sequentially to maintain ordering guarantees
-        let tasks = events_by_table.into_iter().map(|(table_id, table_events)| {
-            tokio::spawn(self.process_table_events(table_id, table_events))
-        }).collect::<Vec<_>>();
+        for (table_id, table_events) in events_by_table {
+            self.process_table_events(table_id, table_events).await?;
+        }
 
         Ok(())
     }
@@ -231,7 +228,10 @@ where
                         upserts_by_pk.remove(&pk);
                         delete_pks.insert(pk);
                     } else {
-                        warn!("Delete event missing old_table_row for table {}", table_id.0);
+                        warn!(
+                            "Delete event missing old_table_row for table {}",
+                            table_id.0
+                        );
                     }
                 }
                 Event::Truncate(_) => {
@@ -241,7 +241,10 @@ where
                 }
                 Event::Relation(_) => {
                     // Schema change events - for future schema evolution support
-                    debug!("Received relation event for table {} (schema change)", table_id.0);
+                    debug!(
+                        "Received relation event for table {} (schema change)",
+                        table_id.0
+                    );
                 }
                 Event::Begin(_) | Event::Commit(_) | Event::Unsupported => {
                     // Skip transaction control events
@@ -254,7 +257,10 @@ where
             self.execute_delete_append_transaction(table_id, &upserts_by_pk, &delete_pks)
                 .await?;
         } else {
-            trace!("No net changes for table {} after deduplication", table_id.0);
+            trace!(
+                "No net changes for table {} after deduplication",
+                table_id.0
+            );
         }
 
         Ok(())
@@ -321,12 +327,13 @@ where
 
             let pk_column_names = DeltaLakeClient::get_primary_key_columns(&table_schema);
             if !pk_column_names.is_empty() {
-                let delete_predicate = self.client.build_pk_predicate(&all_affected_pks, &pk_column_names);
-                
+                let delete_predicate = self
+                    .client
+                    .build_pk_predicate(&all_affected_pks, &pk_column_names);
+
                 trace!(
                     "Deleting rows from table {} with predicate: {}",
-                    table_id.0,
-                    delete_predicate
+                    table_id.0, delete_predicate
                 );
 
                 updated_table = self
@@ -337,7 +344,10 @@ where
                         etl_error!(
                             ErrorKind::DestinationError,
                             "Failed to delete rows from Delta table",
-                            format!("Error deleting from table for table_id {}: {}", table_id.0, e)
+                            format!(
+                                "Error deleting from table for table_id {}: {}",
+                                table_id.0, e
+                            )
                         )
                     })?;
             }
@@ -346,7 +356,7 @@ where
         // Step 2: Append upserted rows if there are any
         if !upserts_by_pk.is_empty() {
             let table_rows: Vec<TableRow> = upserts_by_pk.values().cloned().collect();
-            
+
             trace!(
                 "Appending {} upserted rows to table {}",
                 table_rows.len(),
@@ -365,14 +375,16 @@ where
                     )
                 })?;
 
-            let record_batches = TableRowEncoder::encode_table_rows(&table_schema, table_rows.clone())
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::ConversionError,
-                        "Failed to encode table rows for append",
-                        format!("Error converting to Arrow: {}", e)
-                    )
-                })?;
+            let record_batches =
+                TableRowEncoder::encode_table_rows(&table_schema, table_rows.clone()).map_err(
+                    |e| {
+                        etl_error!(
+                            ErrorKind::ConversionError,
+                            "Failed to encode table rows for append",
+                            format!("Error converting to Arrow: {}", e)
+                        )
+                    },
+                )?;
 
             updated_table = self
                 .client
@@ -382,7 +394,10 @@ where
                     etl_error!(
                         ErrorKind::DestinationError,
                         "Failed to append rows to Delta table",
-                        format!("Error appending to table for table_id {}: {}", table_id.0, e)
+                        format!(
+                            "Error appending to table for table_id {}: {}",
+                            table_id.0, e
+                        )
                     )
                 })?;
         }
@@ -401,7 +416,10 @@ where
 
             if *counter >= optimize_interval.get() {
                 // todo(abhi): Run OPTIMIZE operation when delta-rs supports it
-                info!("Table {} reached optimization threshold, but OPTIMIZE not yet implemented", table_path);
+                info!(
+                    "Table {} reached optimization threshold, but OPTIMIZE not yet implemented",
+                    table_path
+                );
                 *counter = 0;
             }
         }
@@ -437,17 +455,13 @@ where
         info!("Truncating Delta table for table_id: {}", table_id.0);
 
         // Use delete with predicate "true" to remove all rows
-        let updated_table = self
-            .client
-            .truncate_table(table)
-            .await
-            .map_err(|e| {
-                etl_error!(
-                    ErrorKind::DestinationError,
-                    "Failed to truncate Delta table",
-                    format!("Error truncating table for table_id {}: {}", table_id.0, e)
-                )
-            })?;
+        let updated_table = self.client.truncate_table(table).await.map_err(|e| {
+            etl_error!(
+                ErrorKind::DestinationError,
+                "Failed to truncate Delta table",
+                format!("Error truncating table for table_id {}: {}", table_id.0, e)
+            )
+        })?;
 
         // Update the cached table with the new version
         {
@@ -455,7 +469,10 @@ where
             cache.insert(table_path, updated_table);
         }
 
-        info!("Successfully truncated Delta table for table_id: {}", table_id.0);
+        info!(
+            "Successfully truncated Delta table for table_id: {}",
+            table_id.0
+        );
 
         Ok(())
     }
@@ -545,14 +562,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use etl::types::{
-        Cell, TableRow, TableId, 
-        InsertEvent, UpdateEvent, DeleteEvent, TruncateEvent, Event,
-        ColumnSchema, TableName, TableSchema, Type, PgLsn
-    };
     use etl::test_utils::notify::NotifyingStore;
+    use etl::types::{
+        Cell, ColumnSchema, DeleteEvent, Event, InsertEvent, PgLsn, TableId, TableName, TableRow,
+        TableSchema, TruncateEvent, Type, UpdateEvent,
+    };
 
     /// Create a test table schema with id (PK), name, and age columns
+    #[allow(unused)]
     fn create_test_table_schema(table_id: TableId) -> TableSchema {
         TableSchema::new(
             table_id,
@@ -599,14 +616,14 @@ mod tests {
         let table_id = TableId(123);
         let store = NotifyingStore::new();
         // Note: In real tests, we'd need to populate the schema store
-        
+
         let config = DeltaDestinationConfig {
             base_uri: "memory://test".to_string(),
             storage_options: None,
             partition_columns: None,
             optimize_after_commits: None,
         };
-        
+
         let destination = DeltaLakeDestination::new(store, config);
         (destination, table_id)
     }
@@ -615,11 +632,16 @@ mod tests {
     async fn test_extract_primary_key_single_column() {
         let (destination, table_id) = create_test_destination().await;
         let table_row = create_test_row(42, "Alice", Some(25));
-        
+
         // This should fail because schema is not in store - this tests the error path
         let result = destination.extract_primary_key(&table_row, table_id).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Table schema not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Table schema not found")
+        );
     }
 
     #[tokio::test]
@@ -627,19 +649,24 @@ mod tests {
         let store = NotifyingStore::new();
         let config = DeltaDestinationConfig::default();
         let destination = DeltaLakeDestination::new(store, config);
-        
+
         let table_id = TableId(999); // Non-existent table
         let table_row = create_test_row(42, "Alice", Some(25));
-        
+
         let result = destination.extract_primary_key(&table_row, table_id).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Table schema not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Table schema not found")
+        );
     }
 
     #[tokio::test]
     async fn test_process_table_events_empty_list() {
         let (destination, table_id) = create_test_destination().await;
-        
+
         let result = destination.process_table_events(table_id, vec![]).await;
         assert!(result.is_ok());
     }
@@ -647,22 +674,22 @@ mod tests {
     #[tokio::test]
     async fn test_process_table_events_single_insert() {
         let (destination, table_id) = create_test_destination().await;
-        
+
         let insert_event = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(0),
             commit_lsn: PgLsn::from(1),
             table_id,
             table_row: create_test_row(1, "Alice", Some(25)),
         });
-        
+
         // This test verifies the method doesn't panic and processes the event structure correctly
         // The actual Delta operations would require a real Delta table setup
         let events = vec![insert_event];
-        
+
         // For now, this will fail at the ensure_table_exists step since we don't have a real Delta setup
         // But it tests the event processing logic up to that point
         let result = destination.process_table_events(table_id, events).await;
-        
+
         // We expect this to fail at table creation for now, but the important part is
         // that it processes the events correctly before that
         assert!(result.is_err());
@@ -671,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_table_events_deduplication_last_wins() {
         let (destination, table_id) = create_test_destination().await;
-        
+
         // Create events for the same primary key - last one should win
         let insert_event1 = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(0),
@@ -679,7 +706,7 @@ mod tests {
             table_id,
             table_row: create_test_row(1, "Alice", Some(25)),
         });
-        
+
         let update_event = Event::Update(UpdateEvent {
             start_lsn: PgLsn::from(1),
             commit_lsn: PgLsn::from(2),
@@ -687,16 +714,16 @@ mod tests {
             table_row: create_test_row(1, "Alice Updated", Some(26)),
             old_table_row: Some((false, create_test_row(1, "Alice", Some(25)))),
         });
-        
+
         let insert_event2 = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(2),
             commit_lsn: PgLsn::from(3),
             table_id,
             table_row: create_test_row(1, "Alice Final", Some(27)),
         });
-        
+
         let events = vec![insert_event1, update_event, insert_event2];
-        
+
         // The method should process deduplication correctly
         // This will fail at table creation, but tests the deduplication logic
         let result = destination.process_table_events(table_id, events).await;
@@ -706,23 +733,23 @@ mod tests {
     #[tokio::test]
     async fn test_process_table_events_delete_after_insert() {
         let (destination, table_id) = create_test_destination().await;
-        
+
         let insert_event = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(0),
             commit_lsn: PgLsn::from(1),
             table_id,
             table_row: create_test_row(1, "Alice", Some(25)),
         });
-        
+
         let delete_event = Event::Delete(DeleteEvent {
             start_lsn: PgLsn::from(1),
             commit_lsn: PgLsn::from(2),
             table_id,
             old_table_row: Some((false, create_test_row(1, "Alice", Some(25)))),
         });
-        
+
         let events = vec![insert_event, delete_event];
-        
+
         // Should process delete after insert correctly (net result: delete)
         let result = destination.process_table_events(table_id, events).await;
         assert!(result.is_err()); // Expected due to missing real Delta table
@@ -731,30 +758,30 @@ mod tests {
     #[tokio::test]
     async fn test_process_table_events_truncate_short_circuits() {
         let (destination, table_id) = create_test_destination().await;
-        
+
         let insert_event = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(0),
             commit_lsn: PgLsn::from(1),
             table_id,
             table_row: create_test_row(1, "Alice", Some(25)),
         });
-        
+
         let truncate_event = Event::Truncate(TruncateEvent {
             start_lsn: PgLsn::from(1),
             commit_lsn: PgLsn::from(2),
             options: 0,
             rel_ids: vec![table_id.0],
         });
-        
+
         let insert_event2 = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(2),
             commit_lsn: PgLsn::from(3),
             table_id,
             table_row: create_test_row(2, "Bob", Some(30)),
         });
-        
+
         let events = vec![insert_event, truncate_event, insert_event2];
-        
+
         // Truncate should short-circuit and not process subsequent events
         let result = destination.process_table_events(table_id, events).await;
         assert!(result.is_err()); // Expected due to missing real Delta table
@@ -762,39 +789,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_events_by_table_grouping() {
-        let (destination, table_id1) = create_test_destination().await;
+        let (_, table_id1) = create_test_destination().await;
         let table_id2 = TableId(456);
-        
+
         // Add schema for second table
         let store = NotifyingStore::new();
         // Note: In real tests, we'd need to populate the schema store
-        
+
         let config = DeltaDestinationConfig::default();
         let destination = DeltaLakeDestination::new(store, config);
-        
+
         let insert_event1 = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(0),
             commit_lsn: PgLsn::from(1),
             table_id: table_id1,
             table_row: create_test_row(1, "Alice", Some(25)),
         });
-        
+
         let insert_event2 = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(1),
             commit_lsn: PgLsn::from(2),
             table_id: table_id2,
             table_row: create_test_row(1, "Bob", Some(30)),
         });
-        
+
         let insert_event3 = Event::Insert(InsertEvent {
             start_lsn: PgLsn::from(2),
             commit_lsn: PgLsn::from(3),
             table_id: table_id1,
             table_row: create_test_row(2, "Charlie", Some(35)),
         });
-        
+
         let events = vec![insert_event1, insert_event2, insert_event3];
-        
+
         // Should group events by table correctly
         let result = destination.process_events_by_table(events).await;
         assert!(result.is_err()); // Expected due to missing real Delta tables
@@ -803,11 +830,16 @@ mod tests {
     #[tokio::test]
     async fn test_get_table_path_generation() {
         let (destination, table_id) = create_test_destination().await;
-        
+
         // This should fail because schema is not in store - this tests the error path
         let result = destination.get_table_path(table_id).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Table schema not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Table schema not found")
+        );
     }
 
     #[tokio::test]
@@ -823,20 +855,26 @@ mod tests {
     async fn test_config_custom_values() {
         let mut storage_options = HashMap::new();
         storage_options.insert("AWS_REGION".to_string(), "us-west-2".to_string());
-        
+
         let mut partition_columns = HashMap::new();
         partition_columns.insert("test_table".to_string(), vec!["date".to_string()]);
-        
+
         let config = DeltaDestinationConfig {
             base_uri: "s3://my-bucket/warehouse".to_string(),
             storage_options: Some(storage_options.clone()),
             partition_columns: Some(partition_columns.clone()),
             optimize_after_commits: Some(NonZeroU64::new(100).unwrap()),
         };
-        
+
         assert_eq!(config.base_uri, "s3://my-bucket/warehouse");
-        assert_eq!(config.storage_options.unwrap().get("AWS_REGION").unwrap(), "us-west-2");
-        assert_eq!(config.partition_columns.unwrap().get("test_table").unwrap()[0], "date");
+        assert_eq!(
+            config.storage_options.unwrap().get("AWS_REGION").unwrap(),
+            "us-west-2"
+        );
+        assert_eq!(
+            config.partition_columns.unwrap().get("test_table").unwrap()[0],
+            "date"
+        );
         assert_eq!(config.optimize_after_commits.unwrap().get(), 100);
     }
 
@@ -845,14 +883,14 @@ mod tests {
         let store = NotifyingStore::new();
         let config = DeltaDestinationConfig::default();
         let destination = DeltaLakeDestination::new(store, config.clone());
-        
+
         // Verify internal state is initialized correctly
         assert_eq!(destination.config.base_uri, config.base_uri);
-        
+
         // Verify caches are empty initially
         let table_cache = destination.table_cache.read().await;
         assert!(table_cache.is_empty());
-        
+
         let commit_counters = destination.commit_counters.read().await;
         assert!(commit_counters.is_empty());
     }
@@ -861,6 +899,7 @@ mod tests {
     async fn test_extract_primary_key_composite_key() {
         // Create a table schema with composite primary key
         let table_id = TableId(123);
+        #[allow(unused)]
         let composite_schema = TableSchema::new(
             table_id,
             TableName::new("public".to_string(), "composite_test".to_string()),
@@ -888,13 +927,13 @@ mod tests {
                 },
             ],
         );
-        
+
         let store = NotifyingStore::new();
         // Note: In real tests, we'd need to populate the schema store
-        
+
         let config = DeltaDestinationConfig::default();
         let destination = DeltaLakeDestination::new(store, config);
-        
+
         let table_row = TableRow {
             values: vec![
                 Cell::I32(1001),
@@ -902,16 +941,22 @@ mod tests {
                 Cell::String("Alice".to_string()),
             ],
         };
-        
+
         // This should fail because schema is not in store - this tests the error path
         let result = destination.extract_primary_key(&table_row, table_id).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Table schema not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Table schema not found")
+        );
     }
 
     #[tokio::test]
     async fn test_extract_primary_key_with_special_characters() {
         let table_id = TableId(123);
+        #[allow(unused)]
         let schema = TableSchema::new(
             table_id,
             TableName::new("public".to_string(), "special_test".to_string()),
@@ -932,13 +977,13 @@ mod tests {
                 },
             ],
         );
-        
+
         let store = NotifyingStore::new();
         // Note: In real tests, we'd need to populate the schema store
-        
+
         let config = DeltaDestinationConfig::default();
         let destination = DeltaLakeDestination::new(store, config);
-        
+
         // Test with values containing the delimiter
         let table_row = TableRow {
             values: vec![
@@ -946,17 +991,22 @@ mod tests {
                 Cell::String("another::value".to_string()),
             ],
         };
-        
+
         // This should fail because schema is not in store - this tests the error path
         let result = destination.extract_primary_key(&table_row, table_id).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Table schema not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Table schema not found")
+        );
     }
 
     #[tokio::test]
     async fn test_mixed_events_processing_order() {
         let (destination, table_id) = create_test_destination().await;
-        
+
         // Create a mix of events that test the ordering logic
         let events = vec![
             Event::Insert(InsertEvent {
@@ -991,7 +1041,7 @@ mod tests {
                 table_row: create_test_row(3, "Charlie", Some(35)),
             }),
         ];
-        
+
         // This tests the complex deduplication logic:
         // 1. Insert id=1 (Alice)
         // 2. Update id=1 (Alice Updated) -> overwrites previous
@@ -999,7 +1049,7 @@ mod tests {
         // 4. Delete id=1 -> removes Alice Updated
         // 5. Insert id=3 (Charlie)
         // Final state should have: Bob (id=2), Charlie (id=3)
-        
+
         let result = destination.process_table_events(table_id, events).await;
         assert!(result.is_err()); // Expected due to missing real Delta table
     }
