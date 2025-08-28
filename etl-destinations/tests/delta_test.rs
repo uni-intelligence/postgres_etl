@@ -34,7 +34,7 @@ mod delta_verification {
     ) -> DeltaResult<()> {
         let table = database.load_table(table_name).await?;
 
-        let schema = table.get_schema()?;
+        let schema = table.snapshot()?.schema();
 
         let fields: Vec<_> = schema.fields().collect();
 
