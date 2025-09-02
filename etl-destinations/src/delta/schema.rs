@@ -1,7 +1,6 @@
+use deltalake::kernel::engine::arrow_conversion::TryFromArrow;
 use deltalake::kernel::{DataType as DeltaDataType, StructField as DeltaStructField};
 use deltalake::{DeltaResult, Schema as DeltaSchema};
-
-use delta_kernel::engine::arrow_conversion::TryFromArrow;
 
 use deltalake::arrow::array::{
     ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
@@ -17,7 +16,6 @@ use etl::types::{
     ArrayCell as PGArrayCell, Cell as PGCell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT,
     TIMESTAMPTZ_FORMAT_HH_MM, TableRow as PGTableRow, TableSchema as PGTableSchema, Type as PGType,
 };
-use etl::types::{DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TIMESTAMPTZ_FORMAT_HH_MM};
 use std::sync::Arc;
 
 /// Extract numeric precision from Postgres atttypmod
@@ -774,7 +772,7 @@ pub(crate) fn postgres_to_delta_schema(schema: &PGTableSchema) -> DeltaResult<De
 #[cfg(test)]
 mod tests {
     use super::*;
-    use delta_kernel::schema::{DecimalType, PrimitiveType};
+    use deltalake::kernel::schema::{DecimalType, PrimitiveType};
 
     #[test]
     fn test_scalar_mappings() {

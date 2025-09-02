@@ -22,14 +22,13 @@ iceberg = [
     "dep:parquet",
     "dep:uuid",
 ]
-deltalake = ["dep:deltalake", "dep:delta_kernel", "dep:tokio", "dep:tracing"]
+deltalake = ["dep:deltalake", "dep:tokio", "dep:tracing"]
 
 [dependencies]
 etl = { workspace = true }
 chrono = { workspace = true }
 
 arrow = { workspace = true, optional = true }
-delta_kernel = { workspace = true, optional = true, features = ["arrow-conversion"] }
 deltalake = { workspace = true, optional = true, features = ["rustls", "datafusion"] }
 gcp-bigquery-client = { workspace = true, optional = true, features = [
     "rust-tls",
