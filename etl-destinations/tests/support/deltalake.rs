@@ -4,7 +4,7 @@ use deltalake::{DeltaResult, DeltaTable};
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
 use etl::types::TableName;
-use etl_destinations::delta::{DeltaDestinationConfig, DeltaLakeClient, DeltaLakeDestination};
+use etl_destinations::deltalake::{DeltaDestinationConfig, DeltaLakeClient, DeltaLakeDestination};
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;

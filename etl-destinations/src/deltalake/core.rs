@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
-use crate::delta::{DeltaLakeClient, TableRowEncoder};
+use crate::deltalake::{DeltaLakeClient, TableRowEncoder};
 
 /// Configuration for Delta Lake destination
 #[derive(Debug, Clone)]

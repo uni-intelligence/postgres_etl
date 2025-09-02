@@ -6,7 +6,7 @@
 #[cfg(feature = "bigquery")]
 pub mod bigquery;
 #[cfg(feature = "deltalake")]
-pub mod delta;
+pub mod deltalake;
 #[cfg(feature = "iceberg")]
 pub mod iceberg;
 mod metrics;

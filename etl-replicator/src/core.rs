@@ -12,7 +12,7 @@ use etl_config::shared::{
 };
 use etl_destinations::{
     bigquery::{BigQueryDestination, install_crypto_provider_for_bigquery},
-    delta::{DeltaDestinationConfig, DeltaLakeDestination},
+    deltalake::{DeltaDestinationConfig, DeltaLakeDestination},
 };
 use secrecy::ExposeSecret;
 use tokio::signal::unix::{SignalKind, signal};

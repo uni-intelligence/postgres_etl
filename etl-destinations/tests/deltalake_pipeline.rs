@@ -20,7 +20,9 @@ use deltalake::arrow::array::RecordBatch;
 use deltalake::kernel::DataType as DeltaDataType;
 use deltalake::operations::collect_sendable_stream;
 
-use crate::support::delta::{MinioDeltaLakeDatabase, setup_delta_connection};
+use crate::support::deltalake::{MinioDeltaLakeDatabase, setup_delta_connection};
+
+mod support;
 
 /// Helper functions for Delta Lake table verification
 mod delta_verification {
@@ -1146,7 +1148,7 @@ async fn comprehensive_data_type_mapping() {
 async fn test_cdc_deduplication_and_conflict_resolution() {
     init_test_tracing();
 
-    let mut database = spawn_source_database().await;
+    let database = spawn_source_database().await;
     let database_schema = setup_test_database_schema(&database, TableSelection::UsersOnly).await;
 
     let delta_database = setup_delta_connection().await;
@@ -1239,16 +1241,9 @@ async fn test_cdc_deduplication_and_conflict_resolution() {
     pipeline.shutdown_and_wait().await.unwrap();
 
     // Verify the final state after CDC processing
-    let final_count = delta_verification::count_table_rows(&delta_database, users_table)
+    let _final_count = delta_verification::count_table_rows(&delta_database, users_table)
         .await
         .expect("Should be able to count rows");
-
-    println!("Final row count after CDC operations: {}", final_count);
-    // The exact count depends on Delta's implementation, but operations should complete successfully
-    assert!(
-        final_count >= 0,
-        "Table operations should complete successfully"
-    );
 }
 
 /// Test handling of concurrent transactions with different commit orders
