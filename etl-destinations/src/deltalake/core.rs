@@ -449,12 +449,14 @@ where
     S: StateStore + SchemaStore + Send + Sync,
 {
     async fn truncate_table(&self, table_id: TableId) -> EtlResult<()> {
+        // This is currently a no-op, due to the logic relying on table existence and schemas
+        return Ok(());
         let table_path = self.get_table_path(table_id).await?;
-        let table = self.ensure_table_exists(table_id).await?;
 
         info!("Truncating Delta table for table_id: {}", table_id.0);
 
         // Use delete with predicate "true" to remove all rows
+        let table = self.ensure_table_exists(table_id).await?;
         let updated_table = self.client.truncate_table(table).await.map_err(|e| {
             etl_error!(
                 ErrorKind::DestinationError,
