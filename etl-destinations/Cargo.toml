@@ -29,7 +29,7 @@ etl = { workspace = true }
 chrono = { workspace = true }
 
 arrow = { workspace = true, optional = true }
-deltalake = { workspace = true, optional = true, features = ["rustls", "datafusion"] }
+deltalake = { workspace = true, optional = true, default-features = false, features = ["rustls", "datafusion"] }
 gcp-bigquery-client = { workspace = true, optional = true, features = [
     "rust-tls",
     "aws-lc-rs",
@@ -48,7 +48,7 @@ uuid = { workspace = true, optional = true, features = ["v4"] }
 [dev-dependencies]
 etl = { workspace = true, features = ["test-utils"] }
 etl-telemetry = { workspace = true }
-deltalake = { workspace = true, features = ["rustls", "datafusion", "s3"] }
+deltalake = { workspace = true, default-features = false, features = ["rustls", "datafusion", "s3"] }
 
 base64 = { workspace = true }
 chrono = { workspace = true }
