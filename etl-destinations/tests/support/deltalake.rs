@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![cfg(feature = "deltalake")]
 
 use deltalake::{DeltaResult, DeltaTable};
 use etl::store::schema::SchemaStore;
