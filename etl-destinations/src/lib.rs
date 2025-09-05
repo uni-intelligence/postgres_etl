@@ -9,4 +9,3 @@ pub mod bigquery;
 pub mod deltalake;
 #[cfg(feature = "iceberg")]
 pub mod iceberg;
-mod metrics;
