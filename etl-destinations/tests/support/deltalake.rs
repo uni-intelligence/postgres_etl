@@ -68,7 +68,7 @@ impl MinioDeltaLakeDatabase {
             env::var(MINIO_BUCKET_ENV_NAME).unwrap_or_else(|_| DEFAULT_MINIO_BUCKET.to_string());
 
         let warehouse_path = random_warehouse_path();
-        let s3_base_uri = format!("s3://{}/{}", bucket, warehouse_path);
+        let s3_base_uri = format!("s3://{bucket}/{warehouse_path}");
 
         Self {
             warehouse_path,

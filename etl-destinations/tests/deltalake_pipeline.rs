@@ -58,8 +58,7 @@ mod delta_verification {
                 .find(|f| f.name() == *expected_name)
                 .ok_or_else(|| {
                     DeltaTableError::generic(format!(
-                        "Field '{}' not found in schema",
-                        expected_name
+                        "Field '{expected_name}' not found in schema"
                     ))
                 })?;
 
@@ -232,8 +231,7 @@ async fn table_copy_and_streaming_with_restart() {
         .expect("Should be able to count orders rows");
 
     println!(
-        "Initial row counts - Users: {}, Orders: {}",
-        users_count, orders_count
+        "Initial row counts - Users: {users_count}, Orders: {orders_count}"
     );
     assert!(
         users_count >= 2,
@@ -284,8 +282,7 @@ async fn table_copy_and_streaming_with_restart() {
         .expect("Should be able to count orders rows");
 
     println!(
-        "Final row counts after restart - Users: {}, Orders: {}",
-        final_users_count, final_orders_count
+        "Final row counts after restart - Users: {final_users_count}, Orders: {final_orders_count}"
     );
     assert!(
         final_users_count >= 4,
@@ -370,7 +367,7 @@ async fn table_insert_update_delete() {
     let count_after_insert = delta_verification::count_table_rows(&delta_database, users_table)
         .await
         .expect("Should be able to count rows after insert");
-    println!("Row count after insert: {}", count_after_insert);
+    println!("Row count after insert: {count_after_insert}");
     assert!(
         count_after_insert > 0,
         "Users table should have data after insert"
@@ -396,7 +393,7 @@ async fn table_insert_update_delete() {
     let count_after_update = delta_verification::count_table_rows(&delta_database, users_table)
         .await
         .expect("Should be able to count rows after update");
-    println!("Row count after update: {}", count_after_update);
+    println!("Row count after update: {count_after_update}");
     assert!(
         count_after_update > 0,
         "Users table should have data after update"
@@ -531,7 +528,7 @@ async fn table_subsequent_updates() {
     let row_count = delta_verification::count_table_rows(&delta_database, users_table)
         .await
         .expect("Should be able to count rows");
-    println!("Final row count after updates: {}", row_count);
+    println!("Final row count after updates: {row_count}");
     assert!(row_count > 0, "Users table should have data after updates");
 }
 
@@ -657,8 +654,7 @@ async fn table_truncate_with_batching() {
         .expect("Should be able to count orders rows");
 
     println!(
-        "Final row counts - Users: {}, Orders: {}",
-        users_count, orders_count
+        "Final row counts - Users: {users_count}, Orders: {orders_count}"
     );
     assert!(
         users_count > 0,
@@ -762,7 +758,7 @@ async fn table_creation_and_schema_evolution() {
     let row_count = delta_verification::count_table_rows(&delta_database, table_name_ref)
         .await
         .expect("Should be able to count rows");
-    println!("Schema evolution test row count: {}", row_count);
+    println!("Schema evolution test row count: {row_count}");
     assert!(row_count >= 2, "Test table should have at least 2 rows");
 
     // Read and verify the actual data values
@@ -894,7 +890,7 @@ async fn decimal_precision_scale_mapping() {
     let row_count = delta_verification::count_table_rows(&delta_database, table_name_ref)
         .await
         .expect("Should be able to count rows");
-    println!("Decimal precision test row count: {}", row_count);
+    println!("Decimal precision test row count: {row_count}");
     assert_eq!(
         row_count, 2,
         "Decimal test table should have exactly 2 rows"
@@ -1098,7 +1094,7 @@ async fn comprehensive_data_type_mapping() {
     let row_count = delta_verification::count_table_rows(&delta_database, table_name_ref)
         .await
         .expect("Should be able to count rows");
-    println!("Comprehensive data type test row count: {}", row_count);
+    println!("Comprehensive data type test row count: {row_count}");
     assert!(
         row_count >= 1,
         "Types test table should have at least 1 row"
@@ -1138,7 +1134,7 @@ async fn comprehensive_data_type_mapping() {
         ];
 
         for col in &expected_columns {
-            assert!(field_names.contains(col), "Should have column: {}", col);
+            assert!(field_names.contains(col), "Should have column: {col}");
         }
     }
 }
@@ -1337,7 +1333,7 @@ async fn test_concurrent_transactions_commit_ordering() {
         .await
         .expect("Should be able to count rows");
 
-    println!("Final row count after concurrent updates: {}", final_count);
+    println!("Final row count after concurrent updates: {final_count}");
     assert!(
         final_count > 0,
         "Table should have data after concurrent operations"
@@ -1393,7 +1389,7 @@ async fn test_large_transaction_batching() {
             .insert_values(
                 database_schema.users_schema().name.clone(),
                 &["name", "age"],
-                &[&format!("batch_user_{}", i), &(20 + i as i32)],
+                &[&format!("batch_user_{i}"), &(20 + i as i32)],
             )
             .await
             .unwrap();
@@ -1408,10 +1404,9 @@ async fn test_large_transaction_batching() {
         .await
         .expect("Should be able to count rows");
 
-    println!("Final row count after batch operations: {}", final_count);
+    println!("Final row count after batch operations: {final_count}");
     assert!(
         final_count >= insert_count as usize,
-        "Should have at least {} rows after batch insert",
-        insert_count
+        "Should have at least {insert_count} rows after batch insert"
     );
 }

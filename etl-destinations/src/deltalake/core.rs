@@ -1,6 +1,6 @@
 use deltalake::DeltaTable;
 use etl::destination::Destination;
-use etl::error::{ErrorKind, EtlError, EtlResult};
+use etl::error::{ErrorKind, EtlResult};
 use etl::etl_error;
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
@@ -448,20 +448,22 @@ impl<S> Destination for DeltaLakeDestination<S>
 where
     S: StateStore + SchemaStore + Send + Sync,
 {
-    async fn truncate_table(&self, table_id: TableId) -> EtlResult<()> {
-        // This is currently a no-op, due to the logic relying on table existence and schemas
+    async fn truncate_table(&self, _table_id: TableId) -> EtlResult<()> {
         return Ok(());
-        let table_path = self.get_table_path(table_id).await?;
+        // TODO(abhi): Implement truncate table
+        // This is currently a no-op, due to the logic relying on table existence and schemas
+        #[allow(unreachable_code)]
+        let table_path = self.get_table_path(_table_id).await?;
 
-        info!("Truncating Delta table for table_id: {}", table_id.0);
+        info!("Truncating Delta table for table_id: {}", _table_id.0);
 
         // Use delete with predicate "true" to remove all rows
-        let table = self.ensure_table_exists(table_id).await?;
+        let table = self.ensure_table_exists(_table_id).await?;
         let updated_table = self.client.truncate_table(table).await.map_err(|e| {
             etl_error!(
                 ErrorKind::DestinationError,
                 "Failed to truncate Delta table",
-                format!("Error truncating table for table_id {}: {}", table_id.0, e)
+                format!("Error truncating table for table_id {}: {}", _table_id.0, e)
             )
         })?;
 
@@ -473,7 +475,7 @@ where
 
         info!(
             "Successfully truncated Delta table for table_id: {}",
-            table_id.0
+            _table_id.0
         );
 
         Ok(())

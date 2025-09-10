@@ -473,7 +473,7 @@ impl TableRowEncoder {
                 PGCell::TimestampTz(ts) => Some(ts.format(TIMESTAMPTZ_FORMAT_HH_MM).to_string()),
                 PGCell::Uuid(u) => Some(u.to_string()),
                 PGCell::Json(j) => Some(j.to_string()),
-                PGCell::Bytes(b) => Some(format!("\\x{:02x?}", b)),
+                PGCell::Bytes(b) => Some(format!("\\x{b:02x?}")),
                 PGCell::Array(_) => Some("[ARRAY]".to_string()),
             })
             .collect();
@@ -717,22 +717,22 @@ impl TableRowEncoder {
                 PGCell::Null => None,
                 PGCell::Array(array_cell) => match array_cell {
                     PGArrayCell::Null => None,
-                    PGArrayCell::Bool(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::String(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::I16(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::I32(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::U32(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::I64(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::F32(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::F64(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::Numeric(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::Date(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::Time(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::Timestamp(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::TimestampTz(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::Uuid(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::Json(arr) => Some(format!("{:?}", arr)),
-                    PGArrayCell::Bytes(arr) => Some(format!("{:02x?}", arr)),
+                    PGArrayCell::Bool(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::String(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::I16(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::I32(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::U32(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::I64(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::F32(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::F64(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::Numeric(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::Date(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::Time(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::Timestamp(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::TimestampTz(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::Uuid(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::Json(arr) => Some(format!("{arr:?}")),
+                    PGArrayCell::Bytes(arr) => Some(format!("{arr:02x?}")),
                 },
                 _ => None, // Not an array
             })
@@ -982,7 +982,7 @@ mod tests {
             assert_eq!(precision, 5);
             assert_eq!(scale, 2);
         } else {
-            panic!("Expected Decimal128 type, got: {:?}", arrow_type);
+            panic!("Expected Decimal128 type, got: {arrow_type:?}");
         }
     }
 

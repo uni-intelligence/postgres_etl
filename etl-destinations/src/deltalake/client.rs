@@ -384,8 +384,8 @@ impl DeltaLakeClient {
             Cell::Uuid(u) => u.to_string(),
             Cell::Json(j) => j.to_string(),
             Cell::Bytes(b) => {
-                let hex_string: String = b.iter().map(|byte| format!("{:02x}", byte)).collect();
-                format!("\\x{}", hex_string)
+                let hex_string: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+                format!("\\x{hex_string}")
             }
             Cell::Array(_) => "[ARRAY]".to_string(), // Arrays shouldn't be PKs
         }
