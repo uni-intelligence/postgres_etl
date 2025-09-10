@@ -57,9 +57,7 @@ mod delta_verification {
                 .iter()
                 .find(|f| f.name() == *expected_name)
                 .ok_or_else(|| {
-                    DeltaTableError::generic(format!(
-                        "Field '{expected_name}' not found in schema"
-                    ))
+                    DeltaTableError::generic(format!("Field '{expected_name}' not found in schema"))
                 })?;
 
             if _field.data_type() != expected_type {
@@ -230,9 +228,7 @@ async fn table_copy_and_streaming_with_restart() {
         .await
         .expect("Should be able to count orders rows");
 
-    println!(
-        "Initial row counts - Users: {users_count}, Orders: {orders_count}"
-    );
+    println!("Initial row counts - Users: {users_count}, Orders: {orders_count}");
     assert!(
         users_count >= 2,
         "Users table should have at least 2 rows after initial copy"
@@ -653,9 +649,7 @@ async fn table_truncate_with_batching() {
         .await
         .expect("Should be able to count orders rows");
 
-    println!(
-        "Final row counts - Users: {users_count}, Orders: {orders_count}"
-    );
+    println!("Final row counts - Users: {users_count}, Orders: {orders_count}");
     assert!(
         users_count > 0,
         "Users table should have data after truncate and inserts"
