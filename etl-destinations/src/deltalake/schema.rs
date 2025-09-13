@@ -49,7 +49,7 @@ impl TableRowEncoder {
     /// Convert a batch of TableRows to Arrow RecordBatch
     pub fn encode_table_rows(
         table_schema: &PGTableSchema,
-        table_rows: Vec<PGTableRow>,
+        table_rows: Vec<&PGTableRow>,
     ) -> Result<Vec<RecordBatch>, ArrowError> {
         if table_rows.is_empty() {
             return Ok(vec![]);
@@ -62,12 +62,12 @@ impl TableRowEncoder {
     /// Convert TableRows to a single RecordBatch with schema-driven type conversion
     fn table_rows_to_record_batch(
         table_schema: &PGTableSchema,
-        table_rows: Vec<PGTableRow>,
+        table_rows: Vec<&PGTableRow>,
     ) -> Result<RecordBatch, ArrowError> {
         let arrow_schema = Self::postgres_schema_to_arrow_schema(table_schema)?;
 
         let arrays =
-            Self::convert_columns_to_arrays_with_schema(table_schema, &table_rows, &arrow_schema)?;
+            Self::convert_columns_to_arrays_with_schema(table_schema, table_rows, &arrow_schema)?;
 
         RecordBatch::try_new(Arc::new(arrow_schema), arrays)
     }
@@ -214,7 +214,7 @@ impl TableRowEncoder {
     /// Convert table columns to Arrow arrays using schema-driven conversion
     fn convert_columns_to_arrays_with_schema(
         table_schema: &PGTableSchema,
-        table_rows: &[PGTableRow],
+        table_rows: Vec<&PGTableRow>,
         arrow_schema: &ArrowSchema,
     ) -> Result<Vec<ArrayRef>, ArrowError> {
         let mut arrays = Vec::new();
@@ -773,6 +773,61 @@ pub(crate) fn postgres_to_delta_schema(schema: &PGTableSchema) -> DeltaResult<De
 mod tests {
     use super::*;
 
+    fn create_test_schema() -> PGTableSchema {
+        PGTableSchema {
+            id: etl::types::TableId(1),
+            name: TableName::new("public".to_string(), "comprehensive_test".to_string()),
+            column_schemas: vec![
+                ColumnSchema::new("bool_col".to_string(), PGType::BOOL, -1, true, false),
+                ColumnSchema::new("int2_col".to_string(), PGType::INT2, -1, true, false),
+                ColumnSchema::new("int4_col".to_string(), PGType::INT4, -1, true, false),
+                ColumnSchema::new("int8_col".to_string(), PGType::INT8, -1, true, false),
+                ColumnSchema::new("float4_col".to_string(), PGType::FLOAT4, -1, true, false),
+                ColumnSchema::new("float8_col".to_string(), PGType::FLOAT8, -1, true, false),
+                ColumnSchema::new("text_col".to_string(), PGType::TEXT, -1, true, false),
+                ColumnSchema::new("date_col".to_string(), PGType::DATE, -1, true, false),
+                ColumnSchema::new("time_col".to_string(), PGType::TIME, -1, true, false),
+                ColumnSchema::new(
+                    "timestamp_col".to_string(),
+                    PGType::TIMESTAMP,
+                    -1,
+                    true,
+                    false,
+                ),
+                ColumnSchema::new(
+                    "timestamptz_col".to_string(),
+                    PGType::TIMESTAMPTZ,
+                    -1,
+                    true,
+                    false,
+                ),
+                ColumnSchema::new("bytea_col".to_string(), PGType::BYTEA, -1, true, false),
+            ],
+        }
+    }
+
+    fn create_test_row() -> PGTableRow {
+        let date = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let time = NaiveTime::from_hms_opt(12, 30, 45).unwrap();
+        let timestamp = NaiveDateTime::new(date, time);
+        let timestamptz = DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc);
+
+        PGTableRow::new(vec![
+            PGCell::Bool(true),
+            PGCell::I16(12345),
+            PGCell::I32(1234567),
+            PGCell::I64(123456789012345),
+            PGCell::F64(std::f64::consts::PI),
+            PGCell::F64(std::f64::consts::E),
+            PGCell::String("hello world".to_string()),
+            PGCell::Date(date),
+            PGCell::Time(time),
+            PGCell::Timestamp(timestamp),
+            PGCell::TimestampTz(timestamptz),
+            PGCell::Bytes(vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]),
+        ])
+    }
+
     #[test]
     fn test_scalar_mappings() {
         // Test unified mappings using delta-kernel types
@@ -938,8 +993,10 @@ mod tests {
 
     #[test]
     fn test_comprehensive_type_conversion() {
-        let schema = create_comprehensive_test_schema();
-        let rows = vec![create_comprehensive_test_row()];
+        let schema = create_test_schema();
+        let rows = vec![create_test_row()];
+
+        let rows = rows.iter().collect::<Vec<&PGTableRow>>();
 
         let result = TableRowEncoder::encode_table_rows(&schema, rows);
         assert!(result.is_ok());
@@ -1124,7 +1181,7 @@ mod tests {
 
     #[test]
     fn test_schema_generation() {
-        let table_schema = create_comprehensive_test_schema();
+        let table_schema = create_test_schema();
         let result = TableRowEncoder::postgres_schema_to_arrow_schema(&table_schema);
         assert!(result.is_ok());
 
@@ -1133,74 +1190,5 @@ mod tests {
             arrow_schema.fields().len(),
             table_schema.column_schemas.len()
         );
-    }
-
-    fn create_test_schema() -> PGTableSchema {
-        PGTableSchema {
-            id: etl::types::TableId(1),
-            name: TableName::new("public".to_string(), "test_table".to_string()),
-            column_schemas: vec![ColumnSchema::new(
-                "id".to_string(),
-                PGType::INT4,
-                -1,
-                false,
-                true,
-            )],
-        }
-    }
-
-    fn create_comprehensive_test_schema() -> PGTableSchema {
-        PGTableSchema {
-            id: etl::types::TableId(1),
-            name: TableName::new("public".to_string(), "comprehensive_test".to_string()),
-            column_schemas: vec![
-                ColumnSchema::new("bool_col".to_string(), PGType::BOOL, -1, true, false),
-                ColumnSchema::new("int2_col".to_string(), PGType::INT2, -1, true, false),
-                ColumnSchema::new("int4_col".to_string(), PGType::INT4, -1, true, false),
-                ColumnSchema::new("int8_col".to_string(), PGType::INT8, -1, true, false),
-                ColumnSchema::new("float4_col".to_string(), PGType::FLOAT4, -1, true, false),
-                ColumnSchema::new("float8_col".to_string(), PGType::FLOAT8, -1, true, false),
-                ColumnSchema::new("text_col".to_string(), PGType::TEXT, -1, true, false),
-                ColumnSchema::new("date_col".to_string(), PGType::DATE, -1, true, false),
-                ColumnSchema::new("time_col".to_string(), PGType::TIME, -1, true, false),
-                ColumnSchema::new(
-                    "timestamp_col".to_string(),
-                    PGType::TIMESTAMP,
-                    -1,
-                    true,
-                    false,
-                ),
-                ColumnSchema::new(
-                    "timestamptz_col".to_string(),
-                    PGType::TIMESTAMPTZ,
-                    -1,
-                    true,
-                    false,
-                ),
-                ColumnSchema::new("bytea_col".to_string(), PGType::BYTEA, -1, true, false),
-            ],
-        }
-    }
-
-    fn create_comprehensive_test_row() -> PGTableRow {
-        let date = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
-        let time = NaiveTime::from_hms_opt(12, 30, 45).unwrap();
-        let timestamp = NaiveDateTime::new(date, time);
-        let timestamptz = DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc);
-
-        PGTableRow::new(vec![
-            PGCell::Bool(true),
-            PGCell::I16(12345),
-            PGCell::I32(1234567),
-            PGCell::I64(123456789012345),
-            PGCell::F64(std::f64::consts::PI),
-            PGCell::F64(std::f64::consts::E),
-            PGCell::String("hello world".to_string()),
-            PGCell::Date(date),
-            PGCell::Time(time),
-            PGCell::Timestamp(timestamp),
-            PGCell::TimestampTz(timestamptz),
-            PGCell::Bytes(vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]),
-        ])
     }
 }

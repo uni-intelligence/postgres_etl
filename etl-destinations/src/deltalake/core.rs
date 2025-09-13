@@ -1,16 +1,18 @@
+use dashmap::DashMap;
 use deltalake::DeltaTable;
+use deltalake::writer::RecordBatchWriter;
 use etl::destination::Destination;
 use etl::error::{ErrorKind, EtlResult};
 use etl::etl_error;
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
-use etl::types::{Event, TableId, TableRow};
+use etl::types::{Event, TableId, TableRow, TableSchema};
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroU64;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 use tracing::{debug, info, trace, warn};
 
+use crate::deltalake::table::DeltaTableConfig;
 use crate::deltalake::{DeltaLakeClient, TableRowEncoder};
 
 /// Configuration for Delta Lake destination
@@ -20,21 +22,8 @@ pub struct DeltaDestinationConfig {
     pub base_uri: String,
     /// Optional storage options passed to underlying object store
     pub storage_options: Option<HashMap<String, String>>,
-    /// Columns to use for partitioning (per table)
-    pub partition_columns: Option<HashMap<String, Vec<String>>>,
-    /// Run OPTIMIZE every N commits (None = disabled)
-    pub optimize_after_commits: Option<NonZeroU64>,
-}
-
-impl Default for DeltaDestinationConfig {
-    fn default() -> Self {
-        Self {
-            base_uri: "file:///tmp/delta".to_string(),
-            storage_options: None,
-            partition_columns: None,
-            optimize_after_commits: None,
-        }
-    }
+    /// Table configuration (per table)
+    pub table_config: HashMap<String, DeltaTableConfig>,
 }
 
 /// Delta Lake destination implementation
@@ -43,10 +32,10 @@ pub struct DeltaLakeDestination<S> {
     client: DeltaLakeClient,
     store: S,
     config: DeltaDestinationConfig,
-    /// Cache of opened Delta tables by table path
-    table_cache: Arc<RwLock<HashMap<String, Arc<DeltaTable>>>>,
-    /// Commit counters for optimization tracking
-    commit_counters: Arc<RwLock<HashMap<String, u64>>>,
+    /// Cache of opened Delta tables, keyed by postgres table id
+    table_cache: Arc<DashMap<TableId, Arc<DeltaTable>>>,
+    /// Write buffer for append-only tables, keyed by postgres table id
+    append_only_write_buffer: Arc<DashMap<TableId, RecordBatchWriter>>,
 }
 
 impl<S> DeltaLakeDestination<S>
@@ -59,15 +48,13 @@ where
             client: DeltaLakeClient::new(config.storage_options.clone()),
             store,
             config,
-            table_cache: Arc::new(RwLock::new(HashMap::new())),
-            commit_counters: Arc::new(RwLock::new(HashMap::new())),
+            table_cache: Arc::new(DashMap::new()),
         }
     }
 
     /// Get or create table path for a given TableId
     async fn get_table_path(&self, table_id: TableId) -> EtlResult<String> {
         // todo(abhi): Implement table path resolution using table mappings
-        // todo(abhi): Store mapping in StateStore for persistence across restarts
         // todo(abhi): Use schema name and table name from TableSchema
 
         let table_schema = self
@@ -92,15 +79,9 @@ where
         // todo(abhi): Implement table existence check and creation
         // todo(abhi): Handle schema evolution (add missing columns)
         // todo(abhi): Cache table references for performance
-
-        let table_path = self.get_table_path(table_id).await?;
-
         // Check cache first
-        {
-            let cache = self.table_cache.read().await;
-            if let Some(table) = cache.get(&table_path) {
-                return Ok(table.clone());
-            }
+        if let Some(table) = self.table_cache.get(&table_id) {
+            return Ok(table.clone());
         }
 
         // Get table schema from store
@@ -116,9 +97,18 @@ where
                 )
             })?;
 
+        let table_name = &table_schema.name.name;
+        let table_path = format!("{}/{}", self.config.base_uri, table_name);
+        let config = self
+            .config
+            .table_config
+            .get(table_name)
+            .cloned()
+            .unwrap_or_default();
+
         let table = self
             .client
-            .create_table_if_missing(&table_path, &table_schema)
+            .create_table_if_missing(&table_path, &table_schema, &config)
             .await
             .map_err(|e| {
                 etl_error!(
@@ -128,10 +118,7 @@ where
                 )
             })?;
 
-        {
-            let mut cache = self.table_cache.write().await;
-            cache.insert(table_path.clone(), table.clone());
-        }
+        self.table_cache.insert(table_id, table.clone());
 
         Ok(table)
     }
@@ -179,10 +166,14 @@ where
 
         info!("Processing events for {} tables", events_by_table.len());
 
-        // Process each table's events sequentially to maintain ordering guarantees
-        for (table_id, table_events) in events_by_table {
-            self.process_table_events(table_id, table_events).await?;
-        }
+        // We make the assumption that table events are independent of each other
+        // and we can process them in parallel
+        let tasks: JoinSet<EtlResult<()>> = events_by_table
+            .into_iter()
+            .map(|(table_id, events)| self.process_table_events(table_id, events))
+            .collect();
+
+        tasks.join_all().await;
 
         Ok(())
     }
@@ -194,11 +185,32 @@ where
         }
 
         // Ensure table exists before processing events
-        let _table = self.ensure_table_exists(table_id).await?;
+        let table = self.ensure_table_exists(table_id).await?;
+        let table_path = self.get_table_path(table_id).await?;
+        let table_config = self
+            .config
+            .table_config
+            .get(&table_path)
+            .cloned()
+            .unwrap_or_default();
 
+        // Get table schema from store
+        let table_schema = self
+            .store
+            .get_table_schema(&table_id)
+            .await?
+            .ok_or_else(|| {
+                etl_error!(
+                    ErrorKind::MissingTableSchema,
+                    "Table schema not found",
+                    format!("Schema for table {} not found in store", table_id.0)
+                )
+            })?;
+
+        let is_append_only = table_config.append_only;
         // Last-wins deduplication: events are ordered by (commit_lsn, start_lsn)
         // We process events sequentially to maintain correct ordering
-        let mut upserts_by_pk: HashMap<String, TableRow> = HashMap::new();
+        let mut upserts_by_pk: HashMap<String, &TableRow> = HashMap::new();
         let mut delete_pks: HashSet<String> = HashSet::new();
 
         trace!(
@@ -213,15 +225,29 @@ where
                     let pk = self.extract_primary_key(&e.table_row, table_id).await?;
                     // Insert/Update: add to upserts, remove from deletes (last wins)
                     delete_pks.remove(&pk);
-                    upserts_by_pk.insert(pk, e.table_row.clone());
+                    upserts_by_pk.insert(pk, &e.table_row);
                 }
                 Event::Update(e) => {
+                    if is_append_only {
+                        warn!(
+                            "Received update event for append-only table {}, ignoring",
+                            table_id.0
+                        );
+                        continue;
+                    }
                     let pk = self.extract_primary_key(&e.table_row, table_id).await?;
                     // Insert/Update: add to upserts, remove from deletes (last wins)
                     delete_pks.remove(&pk);
-                    upserts_by_pk.insert(pk, e.table_row.clone());
+                    upserts_by_pk.insert(pk, &e.table_row);
                 }
                 Event::Delete(e) => {
+                    if is_append_only {
+                        warn!(
+                            "Received delete event for append-only table {}, ignoring",
+                            table_id.0
+                        );
+                        continue;
+                    }
                     if let Some((_, ref old_row)) = e.old_table_row {
                         let pk = self.extract_primary_key(old_row, table_id).await?;
                         // Delete: remove from upserts, add to deletes (last wins)
@@ -252,9 +278,21 @@ where
             }
         }
 
+        if is_append_only {
+            return self
+                .process_append_only_table_events(
+                    table_id,
+                    table,
+                    table_schema,
+                    table_config,
+                    events,
+                )
+                .await;
+        }
+
         // Execute the consolidated delete+append transaction
         if !upserts_by_pk.is_empty() || !delete_pks.is_empty() {
-            self.execute_delete_append_transaction(table_id, &upserts_by_pk, &delete_pks)
+            self.execute_delete_append_transaction(table_id, upserts_by_pk, &delete_pks)
                 .await?;
         } else {
             trace!(
@@ -264,6 +302,29 @@ where
         }
 
         Ok(())
+    }
+
+    // If we know a table is append-only, we only need to process insert events and can perform more advanced optimizations.
+    async fn process_append_only_table_events(
+        &self,
+        table_id: TableId,
+        table: Arc<DeltaTable>,
+        table_schema: Arc<TableSchema>,
+        config: DeltaTableConfig,
+        rows: Vec<&TableRow>,
+    ) -> EtlResult<()> {
+        let write_buffer = self
+            .append_only_write_buffer
+            .entry(table_id)
+            .or_try_insert_with(|| {
+                RecordBatchWriter::for_table(table.as_ref()).map_err(|e| {
+                    etl_error!(
+                        ErrorKind::DestinationError,
+                        "Failed to create record batch writer for append-only table",
+                        e
+                    )
+                })
+            })?;
     }
 
     /// Extract primary key from a table row
@@ -299,7 +360,7 @@ where
     async fn execute_delete_append_transaction(
         &self,
         table_id: TableId,
-        upserts_by_pk: &HashMap<String, TableRow>,
+        upserts_by_pk: HashMap<String, &TableRow>,
         delete_pks: &HashSet<String>,
     ) -> EtlResult<()> {
         let table_path = self.get_table_path(table_id).await?;
@@ -355,7 +416,7 @@ where
 
         // Step 2: Append upserted rows if there are any
         if !upserts_by_pk.is_empty() {
-            let table_rows: Vec<TableRow> = upserts_by_pk.values().cloned().collect();
+            let table_rows: Vec<&TableRow> = upserts_by_pk.values().cloned().collect();
 
             trace!(
                 "Appending {} upserted rows to table {}",
@@ -375,16 +436,14 @@ where
                     )
                 })?;
 
-            let record_batches =
-                TableRowEncoder::encode_table_rows(&table_schema, table_rows.clone()).map_err(
-                    |e| {
-                        etl_error!(
-                            ErrorKind::ConversionError,
-                            "Failed to encode table rows for append",
-                            format!("Error converting to Arrow: {}", e)
-                        )
-                    },
-                )?;
+            let record_batches = TableRowEncoder::encode_table_rows(&table_schema, table_rows)
+                .map_err(|e| {
+                    etl_error!(
+                        ErrorKind::ConversionError,
+                        "Failed to encode table rows for append",
+                        format!("Error converting to Arrow: {}", e)
+                    )
+                })?;
 
             updated_table = self
                 .client
@@ -624,8 +683,7 @@ mod tests {
         let config = DeltaDestinationConfig {
             base_uri: "memory://test".to_string(),
             storage_options: None,
-            partition_columns: None,
-            optimize_after_commits: None,
+            table_config: HashMap::new(),
         };
 
         let destination = DeltaLakeDestination::new(store, config);

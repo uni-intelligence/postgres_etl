@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::deltalake::table::DeltaTableConfig;
+
 use super::schema::postgres_to_delta_schema;
 use deltalake::arrow::record_batch::RecordBatch;
-use deltalake::{DeltaOps, DeltaResult, DeltaTable, DeltaTableBuilder, open_table};
+use deltalake::{DeltaOps, DeltaResult, DeltaTable, DeltaTableBuilder, TableProperty, open_table};
 use etl::types::{Cell, TableRow, TableSchema};
 
 /// Client for connecting to Delta Lake tables.
@@ -45,6 +47,7 @@ impl DeltaLakeClient {
         &self,
         table_uri: &str,
         table_schema: &TableSchema,
+        table_config: &DeltaTableConfig,
     ) -> DeltaResult<Arc<DeltaTable>> {
         if let Ok(table) = open_table(table_uri).await {
             return Ok(Arc::new(table));
@@ -58,11 +61,17 @@ impl DeltaLakeClient {
             DeltaOps::try_from_uri(table_uri).await?
         };
 
-        let table = ops
+        let mut builder = ops
             .create()
             // TODO(abhi): Figure out how to avoid the clone
-            .with_columns(delta_schema.fields().cloned())
-            .await?;
+            .with_columns(delta_schema.fields().cloned());
+
+        if table_config.append_only {
+            builder = builder
+                .with_configuration_property(TableProperty::AppendOnly, Some("true".to_string()));
+        }
+
+        let table = builder.await?;
 
         Ok(Arc::new(table))
     }
