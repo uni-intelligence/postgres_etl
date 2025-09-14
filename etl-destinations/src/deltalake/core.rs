@@ -8,10 +8,10 @@ use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
 use etl::types::{Event, TableId, TableRow, TableSchema};
 use etl::{bail, etl_error};
+use futures::future::try_join_all;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
 use tracing::{info, trace};
 
 use crate::deltalake::TableRowEncoder;
@@ -151,19 +151,18 @@ where
 
         let mut events_by_table: HashMap<TableId, Vec<Event>> = HashMap::new();
 
-        // Group events by table_id
-        for event in events {
-            match &event {
-                Event::Insert(e) => {
+        for event in events.into_iter() {
+            match event {
+                Event::Insert(ref e) => {
                     events_by_table.entry(e.table_id).or_default().push(event);
                 }
-                Event::Update(e) => {
+                Event::Update(ref e) => {
                     events_by_table.entry(e.table_id).or_default().push(event);
                 }
-                Event::Delete(e) => {
+                Event::Delete(ref e) => {
                     events_by_table.entry(e.table_id).or_default().push(event);
                 }
-                Event::Truncate(e) => {
+                Event::Truncate(ref e) => {
                     // Truncate events affect multiple tables (relation IDs)
                     for &rel_id in &e.rel_ids {
                         let table_id = TableId(rel_id);
@@ -173,7 +172,7 @@ where
                             .push(event.clone());
                     }
                 }
-                Event::Relation(e) => {
+                Event::Relation(ref e) => {
                     // Schema change events - store the table schema
                     let table_id = e.table_schema.id;
                     events_by_table.entry(table_id).or_default().push(event);
@@ -186,10 +185,12 @@ where
 
         info!("Processing events for {} tables", events_by_table.len());
 
-        // Process each table sequentially to avoid lifetime issues in tests
-        for (table_id, events) in events_by_table.into_iter() {
-            self.process_table_events(table_id, events).await?;
-        }
+        let tasks: Vec<_> = events_by_table
+            .into_iter()
+            .map(|(table_id, events)| self.process_table_events(table_id, events))
+            .collect();
+
+        try_join_all(tasks).await?;
 
         Ok(())
     }
@@ -217,12 +218,7 @@ where
             .append_only;
 
         let (delete_predicates, upsert_rows) =
-            crate::deltalake::events::resolve_events_by_table_id(
-                &events,
-                table_id,
-                &table_schema,
-                is_append_only,
-            )?;
+            crate::deltalake::events::materialize_events(&events, &table_schema, is_append_only)?;
 
         self.execute_delete_append_transaction_expr(
             table_id,
@@ -239,7 +235,7 @@ where
         table_id: TableId,
         table_schema: &TableSchema,
         delete_predicates: Vec<Expr>,
-        upsert_rows: Vec<TableRow>,
+        upsert_rows: Vec<&TableRow>,
     ) -> EtlResult<()> {
         let table = match self.table_cache.entry(table_id) {
             Occupied(entry) => entry.into_ref(),
@@ -261,7 +257,7 @@ where
             );
 
             let table = table.lock().await;
-            let ops: DeltaOps = table.clone().into();
+            let ops = DeltaOps::from(table);
             ops.delete()
                 .with_predicate(combined_predicate)
                 .await
@@ -284,15 +280,14 @@ where
                 table_id.0
             );
 
-            let record_batch =
-                TableRowEncoder::encode_table_rows(table_schema, upsert_rows.iter().collect())
-                    .map_err(|e| {
-                        etl_error!(
-                            ErrorKind::ConversionError,
-                            "Failed to encode table rows for append",
-                            format!("Error converting to Arrow: {}", e)
-                        )
-                    })?;
+            let record_batch = TableRowEncoder::encode_table_rows(table_schema, upsert_rows)
+                .map_err(|e| {
+                    etl_error!(
+                        ErrorKind::ConversionError,
+                        "Failed to encode table rows for append",
+                        format!("Error converting to Arrow: {}", e)
+                    )
+                })?;
 
             let config = self.config_for_table_name(&table_schema.name.name);
             let mut table = table.lock().await;

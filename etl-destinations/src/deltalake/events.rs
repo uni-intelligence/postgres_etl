@@ -3,7 +3,7 @@ use deltalake::datafusion::prelude::{Expr, lit};
 use etl::{
     error::{ErrorKind, EtlResult},
     etl_error,
-    types::{Cell, Event, PgLsn, TableId, TableRow, TableSchema},
+    types::{Cell, Event, PgLsn, TableRow, TableSchema},
 };
 use std::collections::HashMap;
 use tracing::warn;
@@ -50,9 +50,9 @@ fn build_pk_expr(table_schema: &TableSchema, row: &TableRow) -> EtlResult<Expr> 
     })
 }
 
-pub(crate) fn resolve_events_by_table_id<'a>(
+/// Materialize events into delete and upsert predicates
+pub(crate) fn materialize_events<'a>(
     events: &'a [Event],
-    table_id: TableId,
     table_schema: &TableSchema,
     is_append_only: bool,
 ) -> EtlResult<(Vec<Expr>, Vec<&'a TableRow>)> {
@@ -71,10 +71,7 @@ pub(crate) fn resolve_events_by_table_id<'a>(
             }
             Event::Update(e) => {
                 if is_append_only {
-                    warn!(
-                        "Received update event for append-only table {}, ignoring",
-                        table_id
-                    );
+                    warn!("Received update event for append-only table, ignoring",);
                     continue;
                 }
                 let marker = (e.commit_lsn, e.start_lsn);
@@ -87,10 +84,7 @@ pub(crate) fn resolve_events_by_table_id<'a>(
             }
             Event::Delete(e) => {
                 if is_append_only {
-                    warn!(
-                        "Received delete event for append-only table {}, ignoring",
-                        table_id
-                    );
+                    warn!("Received delete event for append-only table, ignoring",);
                     continue;
                 }
                 if let Some((_, ref old_row)) = e.old_table_row {
@@ -102,7 +96,7 @@ pub(crate) fn resolve_events_by_table_id<'a>(
                     });
                     entry.update(RowOp::Delete, marker);
                 } else {
-                    warn!("Delete event missing old_table_row for table {}", table_id);
+                    warn!("Delete event missing old_table_row for table");
                 }
             }
             Event::Truncate(_) => {
@@ -227,8 +221,7 @@ mod tests {
 
         let events = vec![e1, e2];
 
-        let (deletes, upserts) =
-            resolve_events_by_table_id(&events, table_id, &schema, false).unwrap();
+        let (deletes, upserts) = materialize_events(&events, &schema, false).unwrap();
         assert!(deletes.is_empty());
         assert_eq!(upserts.len(), 1);
         assert_eq!(upserts[0].values[1], Cell::String("b".to_string()));
@@ -254,8 +247,7 @@ mod tests {
 
         let events = vec![ins, del];
 
-        let (deletes, upserts) =
-            resolve_events_by_table_id(&events, table_id, &schema, false).unwrap();
+        let (deletes, upserts) = materialize_events(&events, &schema, false).unwrap();
         assert!(upserts.is_empty());
         assert_eq!(deletes.len(), 1);
     }
@@ -281,8 +273,7 @@ mod tests {
         let events = vec![ins, upd];
 
         // append_only = true, so update ignored, last write stays as insert
-        let (_deletes, upserts) =
-            resolve_events_by_table_id(&events, table_id, &schema, true).unwrap();
+        let (_deletes, upserts) = materialize_events(&events, &schema, true).unwrap();
         assert_eq!(upserts.len(), 1);
         assert_eq!(upserts[0].values[1], Cell::String("a".to_string()));
     }
@@ -325,8 +316,7 @@ mod tests {
 
         let events = vec![ins1, ins2, upd1, del2];
 
-        let (deletes, upserts) =
-            resolve_events_by_table_id(&events, table_id, &schema, false).unwrap();
+        let (deletes, upserts) = materialize_events(&events, &schema, false).unwrap();
 
         // We expect one delete predicate (for tenant_id=10 AND user_id=101)
         // and one upsert (tenant_id=10 AND user_id=100 with name=a2)
