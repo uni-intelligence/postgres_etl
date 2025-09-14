@@ -1,19 +1,22 @@
 use dashmap::DashMap;
-use deltalake::DeltaTable;
-use deltalake::writer::RecordBatchWriter;
+use dashmap::Entry::{Occupied, Vacant};
+use deltalake::{DeltaOps, DeltaTable, DeltaTableBuilder, DeltaTableError, TableProperty};
 use etl::destination::Destination;
 use etl::error::{ErrorKind, EtlResult};
-use etl::etl_error;
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
-use etl::types::{Event, TableId, TableRow, TableSchema};
+use etl::types::{Event, TableId, TableRow};
+use etl::{bail, etl_error};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tracing::{debug, info, trace, warn};
 
+use crate::deltalake::TableRowEncoder;
+use crate::deltalake::operations::append_to_table;
+use crate::deltalake::schema::postgres_to_delta_schema;
 use crate::deltalake::table::DeltaTableConfig;
-use crate::deltalake::{DeltaLakeClient, TableRowEncoder};
 
 /// Configuration for Delta Lake destination
 #[derive(Debug, Clone)]
@@ -29,13 +32,10 @@ pub struct DeltaDestinationConfig {
 /// Delta Lake destination implementation
 #[derive(Clone)]
 pub struct DeltaLakeDestination<S> {
-    client: DeltaLakeClient,
     store: S,
     config: DeltaDestinationConfig,
     /// Cache of opened Delta tables, keyed by postgres table id
-    table_cache: Arc<DashMap<TableId, Arc<DeltaTable>>>,
-    /// Write buffer for append-only tables, keyed by postgres table id
-    append_only_write_buffer: Arc<DashMap<TableId, RecordBatchWriter>>,
+    table_cache: DashMap<TableId, Arc<Mutex<DeltaTable>>>,
 }
 
 impl<S> DeltaLakeDestination<S>
@@ -45,82 +45,101 @@ where
     /// Create a new Delta Lake destination
     pub fn new(store: S, config: DeltaDestinationConfig) -> Self {
         Self {
-            client: DeltaLakeClient::new(config.storage_options.clone()),
             store,
             config,
-            table_cache: Arc::new(DashMap::new()),
+            table_cache: DashMap::new(),
         }
     }
 
-    /// Get or create table path for a given TableId
-    async fn get_table_path(&self, table_id: TableId) -> EtlResult<String> {
-        // todo(abhi): Implement table path resolution using table mappings
-        // todo(abhi): Use schema name and table name from TableSchema
-
-        let table_schema = self
-            .store
-            .get_table_schema(&table_id)
-            .await?
-            .ok_or_else(|| {
-                etl_error!(
-                    ErrorKind::MissingTableSchema,
-                    "Table schema not found",
-                    format!("Schema for table {} not found in store", table_id.0)
-                )
-            })?;
-
-        let table_path = format!("{}/{}", self.config.base_uri, table_schema.name.name);
-
-        Ok(table_path)
-    }
-
-    /// Ensure table exists and get reference to it
-    async fn ensure_table_exists(&self, table_id: TableId) -> EtlResult<Arc<DeltaTable>> {
-        // todo(abhi): Implement table existence check and creation
-        // todo(abhi): Handle schema evolution (add missing columns)
-        // todo(abhi): Cache table references for performance
-        // Check cache first
-        if let Some(table) = self.table_cache.get(&table_id) {
-            return Ok(table.clone());
-        }
-
-        // Get table schema from store
-        let table_schema = self
-            .store
-            .get_table_schema(&table_id)
-            .await?
-            .ok_or_else(|| {
-                etl_error!(
-                    ErrorKind::MissingTableSchema,
-                    "Table schema not found",
-                    format!("Schema for table {} not found in store", table_id.0)
-                )
-            })?;
-
-        let table_name = &table_schema.name.name;
-        let table_path = format!("{}/{}", self.config.base_uri, table_name);
-        let config = self
-            .config
+    fn config_for_table_name(&self, table_name: &str) -> DeltaTableConfig {
+        self.config
             .table_config
             .get(table_name)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
 
-        let table = self
-            .client
-            .create_table_if_missing(&table_path, &table_schema, &config)
-            .await
-            .map_err(|e| {
+    /// Gets or creates  a Delta table at `table_uri` if it doesn't exist
+    /// This does NOT write or check the cache due to lifetime issues.
+    pub async fn get_or_create_table(&self, table_id: &TableId) -> EtlResult<DeltaTable> {
+        let table_name = self.get_table_name(table_id).await?;
+        let table_path = format!("{}/{}", self.config.base_uri, table_name);
+
+        let mut table_builder = DeltaTableBuilder::from_uri(table_path);
+        if let Some(storage_options) = &self.config.storage_options {
+            table_builder = table_builder.with_storage_options(storage_options.clone());
+        }
+        let mut table = table_builder.build().map_err(|e| {
+            etl_error!(
+                ErrorKind::DestinationError,
+                "Failed to build Delta table",
+                e
+            )
+        })?;
+
+        let ops: DeltaOps = match table.load().await {
+            Ok(_) => return Ok(table),
+            Err(DeltaTableError::NotATable(_)) => table.into(),
+            Err(e) => {
+                bail!(ErrorKind::DestinationError, "Failed to load Delta table", e);
+            }
+        };
+
+        let table_schema = self
+            .store
+            .get_table_schema(table_id)
+            .await?
+            .ok_or_else(|| {
                 etl_error!(
-                    ErrorKind::DestinationError,
-                    "Failed to create Delta table",
-                    format!("Error creating table at {}: {}", table_path, e)
+                    ErrorKind::MissingTableSchema,
+                    "Table schema not found",
+                    format!("Schema for table {} not found in store", table_id.0)
                 )
             })?;
 
-        self.table_cache.insert(table_id, table.clone());
+        let delta_schema = postgres_to_delta_schema(&table_schema).map_err(|e| {
+            etl_error!(
+                ErrorKind::ConversionError,
+                "Failed to convert table schema to Delta schema",
+                e
+            )
+        })?;
+
+        let config = self.config_for_table_name(&table_name);
+
+        let mut builder = ops
+            .create()
+            // TODO(abhi): Figure out how to avoid the clone
+            .with_columns(delta_schema.fields().cloned());
+
+        if config.append_only {
+            builder = builder
+                .with_configuration_property(TableProperty::AppendOnly, Some("true".to_string()));
+        }
+
+        let table = builder.await.map_err(|e| {
+            etl_error!(
+                ErrorKind::DestinationError,
+                "Failed to create Delta table",
+                e
+            )
+        })?;
 
         Ok(table)
+    }
+
+    /// Get the table path for a given TableId
+    async fn get_table_name(&self, table_id: &TableId) -> EtlResult<String> {
+        self.store
+            .get_table_mapping(&table_id)
+            .await?
+            .ok_or_else(|| {
+                etl_error!(
+                    ErrorKind::MissingTableSchema,
+                    "Table schema not found",
+                    format!("Schema for table {} not found in store", table_id.0)
+                )
+            })
     }
 
     /// Process events grouped by table
@@ -304,58 +323,6 @@ where
         Ok(())
     }
 
-    // If we know a table is append-only, we only need to process insert events and can perform more advanced optimizations.
-    async fn process_append_only_table_events(
-        &self,
-        table_id: TableId,
-        table: Arc<DeltaTable>,
-        table_schema: Arc<TableSchema>,
-        config: DeltaTableConfig,
-        rows: Vec<&TableRow>,
-    ) -> EtlResult<()> {
-        let write_buffer = self
-            .append_only_write_buffer
-            .entry(table_id)
-            .or_try_insert_with(|| {
-                RecordBatchWriter::for_table(table.as_ref()).map_err(|e| {
-                    etl_error!(
-                        ErrorKind::DestinationError,
-                        "Failed to create record batch writer for append-only table",
-                        e
-                    )
-                })
-            })?;
-    }
-
-    /// Extract primary key from a table row
-    async fn extract_primary_key(
-        &self,
-        table_row: &TableRow,
-        table_id: TableId,
-    ) -> EtlResult<String> {
-        let table_schema = self
-            .store
-            .get_table_schema(&table_id)
-            .await?
-            .ok_or_else(|| {
-                etl_error!(
-                    ErrorKind::MissingTableSchema,
-                    "Table schema not found for primary key extraction",
-                    format!("Schema for table {} not found in store", table_id.0)
-                )
-            })?;
-
-        self.client
-            .extract_primary_key(table_row, &table_schema)
-            .map_err(|e| {
-                etl_error!(
-                    ErrorKind::ConversionError,
-                    "Failed to extract primary key",
-                    format!("Error extracting PK from table row: {}", e)
-                )
-            })
-    }
-
     /// Execute delete+append transaction for CDC
     async fn execute_delete_append_transaction(
         &self,
@@ -507,37 +474,12 @@ impl<S> Destination for DeltaLakeDestination<S>
 where
     S: StateStore + SchemaStore + Send + Sync,
 {
-    async fn truncate_table(&self, _table_id: TableId) -> EtlResult<()> {
-        return Ok(());
-        // TODO(abhi): Implement truncate table
-        // This is currently a no-op, due to the logic relying on table existence and schemas
-        #[allow(unreachable_code)]
-        let table_path = self.get_table_path(_table_id).await?;
+    fn name() -> &'static str {
+        "deltalake"
+    }
 
-        info!("Truncating Delta table for table_id: {}", _table_id.0);
-
-        // Use delete with predicate "true" to remove all rows
-        let table = self.ensure_table_exists(_table_id).await?;
-        let updated_table = self.client.truncate_table(table).await.map_err(|e| {
-            etl_error!(
-                ErrorKind::DestinationError,
-                "Failed to truncate Delta table",
-                format!("Error truncating table for table_id {}: {}", _table_id.0, e)
-            )
-        })?;
-
-        // Update the cached table with the new version
-        {
-            let mut cache = self.table_cache.write().await;
-            cache.insert(table_path, updated_table);
-        }
-
-        info!(
-            "Successfully truncated Delta table for table_id: {}",
-            _table_id.0
-        );
-
-        Ok(())
+    async fn truncate_table(&self, table_id: TableId) -> EtlResult<()> {
+        todo!()
     }
 
     async fn write_table_rows(
@@ -549,7 +491,14 @@ where
             return Ok(());
         }
 
-        let table = self.ensure_table_exists(table_id).await?;
+        let table = match self.table_cache.entry(table_id) {
+            Occupied(entry) => entry.into_ref(),
+            Vacant(entry) => {
+                let table = self.get_or_create_table(&table_id).await?;
+                entry.insert(Arc::new(Mutex::new(table)))
+            }
+        }
+        .downgrade();
 
         let table_schema = self
             .store
@@ -563,38 +512,32 @@ where
                 )
             })?;
 
-        let record_batches = TableRowEncoder::encode_table_rows(&table_schema, table_rows.clone())
-            .map_err(|e| {
-                etl_error!(
-                    ErrorKind::ConversionError,
-                    "Failed to encode table rows",
-                    format!("Error converting to Arrow: {}", e)
-                )
-            })?;
+        {}
 
-        trace!(
-            "Writing {} rows ({} batches) to Delta table",
-            table_rows.len(),
-            record_batches.len()
-        );
+        let record_batch =
+            TableRowEncoder::encode_table_rows(&table_schema, table_rows.iter().collect())
+                .map_err(|e| {
+                    etl_error!(
+                        ErrorKind::ConversionError,
+                        "Failed to encode table rows",
+                        format!("Error converting to Arrow: {}", e)
+                    )
+                })?;
 
-        let updated_table = self
-            .client
-            .append_to_table(table, record_batches)
-            .await
-            .map_err(|e| {
-                etl_error!(
-                    ErrorKind::DestinationError,
-                    "Failed to write to Delta table",
-                    format!("Error writing to table for table_id {}: {}", table_id.0, e)
-                )
-            })?;
+        trace!("Writing {} rows to Delta table", table_rows.len(),);
 
-        // Update the cached table with the new version
-        let table_path = self.get_table_path(table_id).await?;
+        let config = self.config_for_table_name(&table_schema.name.name);
         {
-            let mut cache = self.table_cache.write().await;
-            cache.insert(table_path, updated_table);
+            let mut table = table.lock().await;
+            append_to_table(&mut table, &config, record_batch)
+                .await
+                .map_err(|e| {
+                    etl_error!(
+                        ErrorKind::DestinationError,
+                        "Failed to write to Delta table",
+                        format!("Error writing to table for table_id {}: {}", table_id.0, e)
+                    )
+                })?;
         }
 
         info!(

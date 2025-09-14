@@ -50,26 +50,15 @@ impl TableRowEncoder {
     pub fn encode_table_rows(
         table_schema: &PGTableSchema,
         table_rows: Vec<&PGTableRow>,
-    ) -> Result<Vec<RecordBatch>, ArrowError> {
-        if table_rows.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let record_batch = Self::table_rows_to_record_batch(table_schema, table_rows)?;
-        Ok(vec![record_batch])
-    }
-
-    /// Convert TableRows to a single RecordBatch with schema-driven type conversion
-    fn table_rows_to_record_batch(
-        table_schema: &PGTableSchema,
-        table_rows: Vec<&PGTableRow>,
     ) -> Result<RecordBatch, ArrowError> {
         let arrow_schema = Self::postgres_schema_to_arrow_schema(table_schema)?;
 
         let arrays =
             Self::convert_columns_to_arrays_with_schema(table_schema, table_rows, &arrow_schema)?;
 
-        RecordBatch::try_new(Arc::new(arrow_schema), arrays)
+        let record_batch = RecordBatch::try_new(Arc::new(arrow_schema), arrays)?;
+
+        Ok(record_batch)
     }
 
     /// Convert Postgres PGTableSchema to Arrow Schema with proper type mapping

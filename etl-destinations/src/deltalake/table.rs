@@ -1,6 +1,9 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 
-use deltalake::parquet::{basic::Compression, file::properties::WriterVersion};
+use deltalake::parquet::{
+    basic::Compression,
+    file::properties::{WriterProperties, WriterVersion},
+};
 
 const DEFAULT_PARQUET_VERSION: WriterVersion = WriterVersion::PARQUET_1_0;
 const DEFAULT_COMPRESSION: Compression = Compression::SNAPPY;
@@ -24,6 +27,15 @@ pub struct DeltaTableConfig {
     pub compact_after_commits: Option<NonZeroU64>,
     /// Run Z-ordering every N commits (None = disabled)
     pub z_order_after_commits: Option<NonZeroU64>,
+}
+
+impl Into<WriterProperties> for DeltaTableConfig {
+    fn into(self) -> WriterProperties {
+        let mut builder = WriterProperties::builder();
+        builder = builder.set_writer_version(self.parquet_version);
+        builder = builder.set_compression(self.compression);
+        builder.build()
+    }
 }
 
 impl Default for DeltaTableConfig {
