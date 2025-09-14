@@ -1,5 +1,8 @@
 use crdts::LWWReg;
-use deltalake::datafusion::prelude::{Expr, lit};
+use deltalake::datafusion::{
+    common::Column,
+    prelude::{Expr, lit},
+};
 use etl::{
     error::{ErrorKind, EtlResult},
     etl_error,
@@ -34,7 +37,8 @@ fn build_pk_expr(table_schema: &TableSchema, row: &TableRow) -> EtlResult<Expr> 
             continue;
         }
         let value_expr = cell_to_scalar_expr(&row.values[idx], table_schema, idx)?;
-        let this_col_expr = Expr::Column(column_schema.name.clone().into()).eq(value_expr);
+        let this_col_expr =
+            Expr::Column(Column::new_unqualified(column_schema.name.clone())).eq(value_expr);
         pk_expr = Some(match pk_expr {
             None => this_col_expr,
             Some(acc) => acc.and(this_col_expr),

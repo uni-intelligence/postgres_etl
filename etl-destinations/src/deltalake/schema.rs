@@ -59,7 +59,11 @@ impl TableRowEncoder {
         let arrays =
             Self::convert_columns_to_arrays_with_schema(table_schema, table_rows, &arrow_schema)?;
 
-        let record_batch = RecordBatch::try_new(Arc::new(arrow_schema), arrays)?;
+        let record_batch = if arrays.is_empty() {
+            RecordBatch::new_empty(Arc::new(arrow_schema))
+        } else {
+            RecordBatch::try_new(Arc::new(arrow_schema), arrays)?
+        };
 
         Ok(record_batch)
     }
@@ -1003,6 +1007,7 @@ mod tests {
     fn test_empty_table_rows() {
         let schema = create_test_schema();
         let result = TableRowEncoder::encode_table_rows(&schema, vec![]);
+        println!("result: {:?}", result);
         assert!(result.is_ok());
         assert!(result.unwrap().num_rows() == 0);
     }
@@ -1010,7 +1015,7 @@ mod tests {
     #[test]
     fn test_comprehensive_type_conversion() {
         let schema = create_test_schema();
-        let rows = vec![create_test_row()];
+        let rows = [create_test_row()];
 
         let rows = rows.iter().collect::<Vec<&PGTableRow>>();
 

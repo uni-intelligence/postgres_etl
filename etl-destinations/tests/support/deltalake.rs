@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 #![cfg(feature = "deltalake")]
 
-use deltalake::{DeltaResult, DeltaTable};
+use deltalake::{DeltaResult, DeltaTable, open_table_with_storage_options};
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
 use etl::types::TableName;
-use etl_destinations::deltalake::{DeltaDestinationConfig, DeltaLakeClient, DeltaLakeDestination};
+use etl_destinations::deltalake::{DeltaDestinationConfig, DeltaLakeDestination};
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
@@ -102,8 +102,7 @@ impl MinioDeltaLakeDatabase {
         let config = DeltaDestinationConfig {
             base_uri: self.s3_base_uri.clone(),
             storage_options: Some(storage_options),
-            partition_columns: None,
-            optimize_after_commits: None,
+            table_config: HashMap::new(),
         };
 
         DeltaLakeDestination::new(store, config)
@@ -127,8 +126,10 @@ impl MinioDeltaLakeDatabase {
             "false".to_string(),
         );
 
-        let client = DeltaLakeClient::new(Some(storage_options));
-        client.open_table(&self.get_table_uri(table_name)).await
+        let table =
+            open_table_with_storage_options(&self.get_table_uri(table_name), storage_options)
+                .await?;
+        Ok(Arc::new(table))
     }
 
     /// Returns the warehouse path for this database instance.

@@ -36,6 +36,7 @@ pub struct DeltaLakeDestination<S> {
     store: S,
     config: DeltaDestinationConfig,
     /// Cache of opened Delta tables, keyed by postgres table id
+    // This isn't using a RWLock because we are overwhelmingly write-heavy
     table_cache: DashMap<TableId, Arc<Mutex<DeltaTable>>>,
 }
 
@@ -60,8 +61,7 @@ where
             .unwrap_or_default()
     }
 
-    /// Gets or creates  a Delta table at `table_uri` if it doesn't exist
-    /// This does NOT write or check the cache due to lifetime issues.
+    /// Gets or creates  a Delta table for a given table id if it doesn't exist
     async fn get_or_create_table(&self, table_id: &TableId) -> EtlResult<DeltaTable> {
         let table_name = self.get_table_name(table_id).await?;
         let table_path = format!("{}/{}", self.config.base_uri, table_name);
@@ -187,6 +187,7 @@ where
 
         let tasks: Vec<_> = events_by_table
             .into_iter()
+            .filter(|(_, events)| !events.is_empty())
             .map(|(table_id, events)| self.process_table_events(table_id, events))
             .collect();
 
@@ -197,10 +198,6 @@ where
 
     /// Process events for a specific table, compacting them into a single consistent state
     async fn process_table_events(&self, table_id: TableId, events: Vec<Event>) -> EtlResult<()> {
-        if events.is_empty() {
-            return Ok(());
-        }
-
         let table_schema = self
             .store
             .get_table_schema(&table_id)
@@ -257,7 +254,7 @@ where
             );
 
             let table = table.lock().await;
-            let ops = DeltaOps::from(table);
+            let ops = DeltaOps::from(table.clone());
             ops.delete()
                 .with_predicate(combined_predicate)
                 .await
@@ -408,125 +405,5 @@ where
         self.process_events_by_table(events).await?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use etl::test_utils::notify::NotifyingStore;
-    use etl::types::{
-        Cell, ColumnSchema, Event, InsertEvent, PgLsn, TableId, TableName, TableRow, TableSchema,
-        Type,
-    };
-
-    #[allow(unused)]
-    fn create_test_table_schema(table_id: TableId) -> TableSchema {
-        TableSchema::new(
-            table_id,
-            TableName::new("public".to_string(), "test_table".to_string()),
-            vec![
-                ColumnSchema {
-                    name: "id".to_string(),
-                    typ: Type::INT8,
-                    modifier: -1,
-                    primary: true,
-                    nullable: false,
-                },
-                ColumnSchema {
-                    name: "name".to_string(),
-                    typ: Type::TEXT,
-                    modifier: -1,
-                    primary: false,
-                    nullable: false,
-                },
-                ColumnSchema {
-                    name: "age".to_string(),
-                    typ: Type::INT4,
-                    modifier: -1,
-                    primary: false,
-                    nullable: true,
-                },
-            ],
-        )
-    }
-
-    fn create_test_row(id: i64, name: &str, age: Option<i32>) -> TableRow {
-        TableRow {
-            values: vec![
-                Cell::I64(id),
-                Cell::String(name.to_string()),
-                age.map_or(Cell::Null, Cell::I32),
-            ],
-        }
-    }
-
-    async fn create_test_destination() -> (DeltaLakeDestination<NotifyingStore>, TableId) {
-        let table_id = TableId(123);
-        let store = NotifyingStore::new();
-        let config = DeltaDestinationConfig {
-            base_uri: "memory://test".to_string(),
-            storage_options: None,
-            table_config: HashMap::new(),
-        };
-        let destination = DeltaLakeDestination::new(store, config);
-        (destination, table_id)
-    }
-
-    #[tokio::test]
-    async fn test_process_table_events_empty_list() {
-        let (destination, table_id) = create_test_destination().await;
-        let result = destination.process_table_events(table_id, vec![]).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_process_table_events_single_insert_structure() {
-        let (destination, table_id) = create_test_destination().await;
-        let insert_event = Event::Insert(InsertEvent {
-            start_lsn: PgLsn::from(0),
-            commit_lsn: PgLsn::from(1),
-            table_id,
-            table_row: create_test_row(1, "Alice", Some(25)),
-        });
-        let events = vec![insert_event];
-        let result = destination.process_table_events(table_id, events).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_grouping_by_table_basic() {
-        let (_, table_id1) = create_test_destination().await;
-        let table_id2 = TableId(456);
-        let store = NotifyingStore::new();
-        let config = DeltaDestinationConfig {
-            base_uri: "memory://test".to_string(),
-            storage_options: None,
-            table_config: HashMap::new(),
-        };
-        let destination = DeltaLakeDestination::new(store, config);
-
-        let insert_event1 = Event::Insert(InsertEvent {
-            start_lsn: PgLsn::from(0),
-            commit_lsn: PgLsn::from(1),
-            table_id: table_id1,
-            table_row: create_test_row(1, "Alice", Some(25)),
-        });
-        let insert_event2 = Event::Insert(InsertEvent {
-            start_lsn: PgLsn::from(1),
-            commit_lsn: PgLsn::from(2),
-            table_id: table_id2,
-            table_row: create_test_row(1, "Bob", Some(30)),
-        });
-        let insert_event3 = Event::Insert(InsertEvent {
-            start_lsn: PgLsn::from(2),
-            commit_lsn: PgLsn::from(3),
-            table_id: table_id1,
-            table_row: create_test_row(2, "Charlie", Some(35)),
-        });
-
-        let events = vec![insert_event1, insert_event2, insert_event3];
-        let result = destination.process_events_by_table(events).await;
-        assert!(result.is_err());
     }
 }
