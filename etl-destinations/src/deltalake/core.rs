@@ -6,7 +6,7 @@ use etl::destination::Destination;
 use etl::error::{ErrorKind, EtlResult};
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
-use etl::types::{Event, TableId, TableRow, TableSchema};
+use etl::types::{Event, TableId, TableRow as PgTableRow, TableSchema as PgTableSchema};
 use etl::{bail, etl_error};
 use futures::future::try_join_all;
 use std::collections::HashMap;
@@ -15,7 +15,8 @@ use tokio::sync::Mutex;
 use tracing::{info, trace};
 
 use crate::deltalake::TableRowEncoder;
-use crate::deltalake::operations::append_to_table;
+use crate::deltalake::events::{materialize_events, materialize_events_append_only};
+use crate::deltalake::operations::{append_to_table, merge_to_table};
 use crate::deltalake::schema::postgres_to_delta_schema;
 use crate::deltalake::table::DeltaTableConfig;
 
@@ -214,25 +215,30 @@ where
             .config_for_table_name(&table_schema.name.name)
             .append_only;
 
-        let (delete_predicates, upsert_rows) =
-            crate::deltalake::events::materialize_events(&events, &table_schema, is_append_only)?;
+        if is_append_only {
+            let rows = materialize_events_append_only(&events, &table_schema)?;
+            self.write_table_rows_internal(&table_id, rows).await?;
+        } else {
+            let (delete_predicates, rows) = materialize_events(&events, &table_schema)?;
+            self.execute_delete_append_transaction_expr(
+                table_id,
+                &table_schema,
+                rows,
+                delete_predicates,
+            )
+            .await?;
+        }
 
-        self.execute_delete_append_transaction_expr(
-            table_id,
-            &table_schema,
-            delete_predicates,
-            upsert_rows,
-        )
-        .await
+        Ok(())
     }
 
     /// Execute delete+append transaction for CDC using DataFusion expressions for keys
     async fn execute_delete_append_transaction_expr(
         &self,
         table_id: TableId,
-        table_schema: &TableSchema,
+        table_schema: &PgTableSchema,
+        upsert_rows: Vec<&PgTableRow>,
         delete_predicates: Vec<Expr>,
-        upsert_rows: Vec<&TableRow>,
     ) -> EtlResult<()> {
         let table = match self.table_cache.entry(table_id) {
             Occupied(entry) => entry.into_ref(),
@@ -242,33 +248,16 @@ where
             }
         };
 
-        if !delete_predicates.is_empty() {
-            let combined_predicate = delete_predicates
-                .into_iter()
-                .reduce(|acc, e| acc.or(e))
-                .expect("non-empty predicates");
-
-            trace!(
-                "Deleting rows from table {} with predicate (Expr)",
-                table_id.0
-            );
-
-            let table = table.lock().await;
-            let ops = DeltaOps::from(table.clone());
-            ops.delete()
-                .with_predicate(combined_predicate)
-                .await
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::DestinationError,
-                        "Failed to delete rows from Delta table",
-                        format!(
-                            "Error deleting from table for table_id {}: {}",
-                            table_id.0, e
-                        )
-                    )
-                })?;
-        }
+        let combined_predicate = if !delete_predicates.is_empty() {
+            Some(
+                delete_predicates
+                    .into_iter()
+                    .reduce(|acc, e| acc.or(e))
+                    .expect("non-empty predicates"),
+            )
+        } else {
+            None
+        };
 
         if !upsert_rows.is_empty() {
             trace!(
@@ -277,29 +266,28 @@ where
                 table_id.0
             );
 
-            let record_batch = TableRowEncoder::encode_table_rows(table_schema, upsert_rows)
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::ConversionError,
-                        "Failed to encode table rows for append",
-                        format!("Error converting to Arrow: {}", e)
-                    )
-                })?;
-
             let config = self.config_for_table_name(&table_schema.name.name);
             let mut table = table.lock().await;
-            append_to_table(&mut table, &config, record_batch)
-                .await
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::DestinationError,
-                        "Failed to append rows to Delta table",
-                        format!(
-                            "Error appending to table for table_id {}: {}",
-                            table_id.0, e
-                        )
-                    )
-                })?;
+            todo!();
+            // merge_to_table(
+            //     table,
+            //     &config,
+            //     table_schema,
+            //     primary_keys,
+            //     upsert_rows,
+            //     combined_predicate,
+            // )
+            // .await
+            // .map_err(|e| {
+            //     etl_error!(
+            //         ErrorKind::DestinationError,
+            //         "Failed to append rows to Delta table",
+            //         format!(
+            //             "Error appending to table for table_id {}: {}",
+            //             table_id.0, e
+            //         )
+            //     )
+            // })?;
         }
 
         Ok(())
@@ -310,6 +298,68 @@ where
     async fn optimize_table(&self, _table_path: &str) -> EtlResult<()> {
         // todo(abhi): Implement OPTIMIZE operation using delta-rs
         // todo(abhi): Small file compaction and Z-ordering
+
+        Ok(())
+    }
+
+    async fn write_table_rows_internal(
+        &self,
+        table_id: &TableId,
+        table_rows: Vec<&PgTableRow>,
+    ) -> EtlResult<()> {
+        if table_rows.is_empty() {
+            return Ok(());
+        }
+
+        let table = match self.table_cache.entry(*table_id) {
+            Occupied(entry) => entry.into_ref(),
+            Vacant(entry) => {
+                let table = self.get_or_create_table(table_id).await?;
+                entry.insert(Arc::new(Mutex::new(table)))
+            }
+        }
+        .downgrade();
+
+        let table_schema = self
+            .store
+            .get_table_schema(table_id)
+            .await?
+            .ok_or_else(|| {
+                etl_error!(
+                    ErrorKind::MissingTableSchema,
+                    "Table schema not found",
+                    format!("Schema for table {} not found in store", table_id.0)
+                )
+            })?;
+
+        let row_length = table_rows.len();
+        trace!("Writing {} rows to Delta table", row_length);
+
+        let record_batch =
+            TableRowEncoder::encode_table_rows(&table_schema, table_rows).map_err(|e| {
+                etl_error!(
+                    ErrorKind::ConversionError,
+                    "Failed to encode table rows",
+                    format!("Error converting to Arrow: {}", e)
+                )
+            })?;
+
+        let config = self.config_for_table_name(&table_schema.name.name);
+        let mut table = table.lock().await;
+        append_to_table(&mut table, &config, record_batch)
+            .await
+            .map_err(|e| {
+                etl_error!(
+                    ErrorKind::DestinationError,
+                    "Failed to write to Delta table",
+                    format!("Error writing to table for table_id {}: {}", table_id, e)
+                )
+            })?;
+
+        info!(
+            "Successfully wrote {} rows to Delta table for table_id: {}",
+            row_length, table_id.0
+        );
 
         Ok(())
     }
@@ -330,66 +380,10 @@ where
     async fn write_table_rows(
         &self,
         table_id: TableId,
-        table_rows: Vec<TableRow>,
+        table_rows: Vec<PgTableRow>,
     ) -> EtlResult<()> {
-        if table_rows.is_empty() {
-            return Ok(());
-        }
-
-        let table = match self.table_cache.entry(table_id) {
-            Occupied(entry) => entry.into_ref(),
-            Vacant(entry) => {
-                let table = self.get_or_create_table(&table_id).await?;
-                entry.insert(Arc::new(Mutex::new(table)))
-            }
-        }
-        .downgrade();
-
-        let table_schema = self
-            .store
-            .get_table_schema(&table_id)
-            .await?
-            .ok_or_else(|| {
-                etl_error!(
-                    ErrorKind::MissingTableSchema,
-                    "Table schema not found",
-                    format!("Schema for table {} not found in store", table_id.0)
-                )
-            })?;
-
-        {}
-
-        let record_batch =
-            TableRowEncoder::encode_table_rows(&table_schema, table_rows.iter().collect())
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::ConversionError,
-                        "Failed to encode table rows",
-                        format!("Error converting to Arrow: {}", e)
-                    )
-                })?;
-
-        trace!("Writing {} rows to Delta table", table_rows.len(),);
-
-        let config = self.config_for_table_name(&table_schema.name.name);
-        let mut table = table.lock().await;
-        append_to_table(&mut table, &config, record_batch)
+        self.write_table_rows_internal(&table_id, table_rows.iter().collect())
             .await
-            .map_err(|e| {
-                etl_error!(
-                    ErrorKind::DestinationError,
-                    "Failed to write to Delta table",
-                    format!("Error writing to table for table_id {}: {}", table_id.0, e)
-                )
-            })?;
-
-        info!(
-            "Successfully wrote {} rows to Delta table for table_id: {}",
-            table_rows.len(),
-            table_id.0
-        );
-
-        Ok(())
     }
 
     async fn write_events(&self, events: Vec<Event>) -> EtlResult<()> {

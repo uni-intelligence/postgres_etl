@@ -1,72 +1,75 @@
 use crdts::LWWReg;
-use deltalake::datafusion::{
-    common::Column,
-    prelude::{Expr, lit},
-};
+use deltalake::datafusion::{common::HashMap, prelude::Expr};
 use etl::{
-    error::{ErrorKind, EtlResult},
-    etl_error,
-    types::{Cell, Event, PgLsn, TableRow, TableSchema},
+    error::EtlResult,
+    types::{Event, PgLsn, TableRow as PgTableRow, TableSchema as PgTableSchema},
 };
-use std::collections::HashMap;
 use tracing::warn;
+
+use crate::deltalake::expr::build_pk_expr;
 
 #[derive(Debug, Clone, PartialEq)]
 enum RowOp<'a> {
-    Upsert(&'a TableRow),
+    Upsert(&'a PgTableRow),
     Delete,
 }
 
-/// Convert `Cell` to DataFusion `ScalarValue` wrapped as a literal `Expr`.
-fn cell_to_scalar_expr(cell: &Cell, schema: &TableSchema, col_idx: usize) -> EtlResult<Expr> {
-    use crate::deltalake::schema::TableRowEncoder;
-    let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(
-        &schema.column_schemas[col_idx].typ,
-        schema.column_schemas[col_idx].modifier,
-    );
-    let sv = TableRowEncoder::cell_to_scalar_value_for_arrow(cell, &arrow_type)?;
-    Ok(lit(sv))
-}
-
-/// Build a DataFusion predicate `Expr` representing equality over all primary key columns
-/// for the provided `row` according to `table_schema`.
-fn build_pk_expr(table_schema: &TableSchema, row: &TableRow) -> EtlResult<Expr> {
-    let mut pk_expr: Option<Expr> = None;
-    for (idx, column_schema) in table_schema.column_schemas.iter().enumerate() {
-        if !column_schema.primary {
-            continue;
-        }
-        let value_expr = cell_to_scalar_expr(&row.values[idx], table_schema, idx)?;
-        let this_col_expr =
-            Expr::Column(Column::new_unqualified(column_schema.name.clone())).eq(value_expr);
-        pk_expr = Some(match pk_expr {
-            None => this_col_expr,
-            Some(acc) => acc.and(this_col_expr),
-        });
-    }
-
-    pk_expr.ok_or_else(|| {
-        etl_error!(
-            ErrorKind::MissingTableSchema,
-            "Table has no primary key columns",
-            table_schema.name.to_string()
-        )
-    })
-}
-
-/// Materialize events into delete and upsert predicates
-pub(crate) fn materialize_events<'a>(
+pub fn materialize_events_append_only<'a>(
     events: &'a [Event],
-    table_schema: &TableSchema,
-    is_append_only: bool,
-) -> EtlResult<(Vec<Expr>, Vec<&'a TableRow>)> {
+    table_schema: &PgTableSchema,
+) -> EtlResult<Vec<&'a PgTableRow>> {
     let mut crdt_by_key: HashMap<Expr, LWWReg<RowOp, (PgLsn, PgLsn)>> = HashMap::new();
 
     for event in events.iter() {
         match event {
             Event::Insert(e) => {
                 let marker = (e.commit_lsn, e.start_lsn);
-                let pk_expr = build_pk_expr(table_schema, &e.table_row)?;
+                let pk_expr = build_pk_expr(table_schema, &e.table_row);
+                let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
+                    val: RowOp::Upsert(&e.table_row),
+                    marker,
+                });
+                entry.update(RowOp::Upsert(&e.table_row), marker);
+            }
+            Event::Update(_) => {
+                warn!("Received update event for append-only table, ignoring");
+            }
+            Event::Delete(_) => {
+                warn!("Received delete event for append-only table, ignoring");
+            }
+            Event::Relation(_)
+            | Event::Begin(_)
+            | Event::Commit(_)
+            | Event::Truncate(_)
+            | Event::Unsupported => {
+                // Skip non-row events
+            }
+        }
+    }
+
+    let mut upsert_rows: Vec<&PgTableRow> = Vec::new();
+    for (_, reg) in crdt_by_key.into_iter() {
+        match reg.val {
+            RowOp::Upsert(row) => upsert_rows.push(row),
+            _ => {}
+        }
+    }
+
+    Ok(upsert_rows)
+}
+
+/// Materialize events into delete and upsert predicates
+pub fn materialize_events<'a>(
+    events: &'a [Event],
+    table_schema: &PgTableSchema,
+) -> EtlResult<(Vec<Expr>, Vec<&'a PgTableRow>)> {
+    let mut crdt_by_key: HashMap<Expr, LWWReg<RowOp, (PgLsn, PgLsn)>> = HashMap::new();
+
+    for event in events.iter() {
+        match event {
+            Event::Insert(e) => {
+                let marker = (e.commit_lsn, e.start_lsn);
+                let pk_expr = build_pk_expr(table_schema, &e.table_row);
                 let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
                     val: RowOp::Upsert(&e.table_row),
                     marker,
@@ -74,12 +77,8 @@ pub(crate) fn materialize_events<'a>(
                 entry.update(RowOp::Upsert(&e.table_row), marker);
             }
             Event::Update(e) => {
-                if is_append_only {
-                    warn!("Received update event for append-only table, ignoring",);
-                    continue;
-                }
                 let marker = (e.commit_lsn, e.start_lsn);
-                let pk_expr = build_pk_expr(table_schema, &e.table_row)?;
+                let pk_expr = build_pk_expr(table_schema, &e.table_row);
                 let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
                     val: RowOp::Upsert(&e.table_row),
                     marker,
@@ -87,13 +86,9 @@ pub(crate) fn materialize_events<'a>(
                 entry.update(RowOp::Upsert(&e.table_row), marker);
             }
             Event::Delete(e) => {
-                if is_append_only {
-                    warn!("Received delete event for append-only table, ignoring",);
-                    continue;
-                }
                 if let Some((_, ref old_row)) = e.old_table_row {
                     let marker = (e.commit_lsn, e.start_lsn);
-                    let pk_expr = build_pk_expr(table_schema, old_row)?;
+                    let pk_expr = build_pk_expr(table_schema, old_row);
                     let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
                         val: RowOp::Delete,
                         marker,
@@ -114,7 +109,7 @@ pub(crate) fn materialize_events<'a>(
     }
 
     let mut delete_predicates: Vec<Expr> = Vec::new();
-    let mut upsert_rows: Vec<&TableRow> = Vec::new();
+    let mut upsert_rows: Vec<&PgTableRow> = Vec::new();
 
     for (expr, reg) in crdt_by_key.into_iter() {
         match reg.val {
@@ -130,23 +125,23 @@ pub(crate) fn materialize_events<'a>(
 mod tests {
     use super::*;
     use etl::types::{
-        Cell, ColumnSchema, DeleteEvent, InsertEvent, PgLsn, TableId, TableName, TableRow,
-        TableSchema, Type, UpdateEvent,
+        Cell as PgCell, ColumnSchema as PgColumnSchema, DeleteEvent, InsertEvent, PgLsn, TableId,
+        TableName, TableRow as PgTableRow, TableSchema as PgTableSchema, Type, UpdateEvent,
     };
 
-    fn schema_single_pk(table_id: TableId) -> TableSchema {
-        TableSchema::new(
+    fn schema_single_pk(table_id: TableId) -> PgTableSchema {
+        PgTableSchema::new(
             table_id,
             TableName::new("public".to_string(), "t".to_string()),
             vec![
-                ColumnSchema {
+                PgColumnSchema {
                     name: "id".to_string(),
                     typ: Type::INT8,
                     modifier: -1,
                     primary: true,
                     nullable: false,
                 },
-                ColumnSchema {
+                PgColumnSchema {
                     name: "name".to_string(),
                     typ: Type::TEXT,
                     modifier: -1,
@@ -157,32 +152,32 @@ mod tests {
         )
     }
 
-    fn row(id: i64, name: &str) -> TableRow {
-        TableRow {
-            values: vec![Cell::I64(id), Cell::String(name.to_string())],
+    fn row(id: i64, name: &str) -> PgTableRow {
+        PgTableRow {
+            values: vec![PgCell::I64(id), PgCell::String(name.to_string())],
         }
     }
 
-    fn schema_composite_pk(table_id: TableId) -> TableSchema {
-        TableSchema::new(
+    fn schema_composite_pk(table_id: TableId) -> PgTableSchema {
+        PgTableSchema::new(
             table_id,
             TableName::new("public".to_string(), "t".to_string()),
             vec![
-                ColumnSchema {
+                PgColumnSchema {
                     name: "tenant_id".to_string(),
                     typ: Type::INT4,
                     modifier: -1,
                     primary: true,
                     nullable: false,
                 },
-                ColumnSchema {
+                PgColumnSchema {
                     name: "user_id".to_string(),
                     typ: Type::INT8,
                     modifier: -1,
                     primary: true,
                     nullable: false,
                 },
-                ColumnSchema {
+                PgColumnSchema {
                     name: "name".to_string(),
                     typ: Type::TEXT,
                     modifier: -1,
@@ -193,12 +188,12 @@ mod tests {
         )
     }
 
-    fn row_composite(tenant: i32, user: i64, name: &str) -> TableRow {
-        TableRow {
+    fn row_composite(tenant: i32, user: i64, name: &str) -> PgTableRow {
+        PgTableRow {
             values: vec![
-                Cell::I32(tenant),
-                Cell::I64(user),
-                Cell::String(name.to_string()),
+                PgCell::I32(tenant),
+                PgCell::I64(user),
+                PgCell::String(name.to_string()),
             ],
         }
     }
@@ -225,10 +220,10 @@ mod tests {
 
         let events = vec![e1, e2];
 
-        let (deletes, upserts) = materialize_events(&events, &schema, false).unwrap();
+        let (deletes, upserts) = materialize_events(&events, &schema).unwrap();
         assert!(deletes.is_empty());
         assert_eq!(upserts.len(), 1);
-        assert_eq!(upserts[0].values[1], Cell::String("b".to_string()));
+        assert_eq!(upserts[0].values[1], PgCell::String("b".to_string()));
     }
 
     #[test]
@@ -251,7 +246,7 @@ mod tests {
 
         let events = vec![ins, del];
 
-        let (deletes, upserts) = materialize_events(&events, &schema, false).unwrap();
+        let (deletes, upserts) = materialize_events(&events, &schema).unwrap();
         assert!(upserts.is_empty());
         assert_eq!(deletes.len(), 1);
     }
@@ -276,10 +271,9 @@ mod tests {
 
         let events = vec![ins, upd];
 
-        // append_only = true, so update ignored, last write stays as insert
-        let (_deletes, upserts) = materialize_events(&events, &schema, true).unwrap();
+        let upserts = materialize_events_append_only(&events, &schema).unwrap();
         assert_eq!(upserts.len(), 1);
-        assert_eq!(upserts[0].values[1], Cell::String("a".to_string()));
+        assert_eq!(upserts[0].values[1], PgCell::String("a".to_string()));
     }
 
     #[test]
@@ -320,12 +314,12 @@ mod tests {
 
         let events = vec![ins1, ins2, upd1, del2];
 
-        let (deletes, upserts) = materialize_events(&events, &schema, false).unwrap();
+        let (deletes, upserts) = materialize_events(&events, &schema).unwrap();
 
         // We expect one delete predicate (for tenant_id=10 AND user_id=101)
         // and one upsert (tenant_id=10 AND user_id=100 with name=a2)
         assert_eq!(deletes.len(), 1);
         assert_eq!(upserts.len(), 1);
-        assert_eq!(upserts[0].values[2], Cell::String("a2".to_string()));
+        assert_eq!(upserts[0].values[2], PgCell::String("a2".to_string()));
     }
 }

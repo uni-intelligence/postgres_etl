@@ -1,5 +1,6 @@
 mod core;
-mod events;
+pub(crate) mod events;
+pub(crate) mod expr;
 mod operations;
 mod schema;
 mod table;
