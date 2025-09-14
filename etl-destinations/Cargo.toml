@@ -36,7 +36,7 @@ etl = { workspace = true }
 arrow = { workspace = true, optional = true }
 chrono = { workspace = true }
 dashmap = { workspace = true, optional = true }
-deltalake = { workspace = true, optional = true, default-features = false, features = ["datafusion"] }
+deltalake = { workspace = true, optional = true, default-features = false, features = ["datafusion", "rustls"] }
 gcp-bigquery-client = { workspace = true, optional = true, features = [
     "rust-tls",
     "aws-lc-rs",
