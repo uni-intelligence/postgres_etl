@@ -43,7 +43,6 @@ clap = { version = "4.5.42", default-features = false }
 config = { version = "0.14", default-features = false }
 const-oid = { version = "0.9.6", default-features = false }
 constant_time_eq = { version = "0.4.2" }
-crdts = { version = "7.3.2" }
 dashmap = { version = "6.1.0", default-features = false }
 deltalake = { version = "0.28.0", default-features = false }
 fail = { version = "0.5.1", default-features = false }

@@ -1,4 +1,4 @@
-use crdts::LWWReg;
+use crate::deltalake::util::LWWReg;
 use deltalake::datafusion::{common::HashMap, prelude::Expr};
 use etl::{
     error::EtlResult,

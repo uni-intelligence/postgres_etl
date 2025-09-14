@@ -5,7 +5,7 @@ use deltalake::{DeltaResult, Schema as DeltaSchema};
 use deltalake::arrow::array::{
     ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
     Int16Array, Int32Array, Int64Array, StringArray, Time64NanosecondArray,
-    TimestampMicrosecondArray, UInt32Array,
+    TimestampMicrosecondArray, UInt32Array, new_empty_array,
 };
 use deltalake::arrow::datatypes::{
     DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema, TimeUnit,
@@ -233,7 +233,7 @@ impl TableRowEncoder {
         expected_type: &ArrowDataType,
     ) -> Result<ArrayRef, ArrowError> {
         if cells.is_empty() {
-            return Self::create_empty_array(expected_type);
+            return Ok(new_empty_array(expected_type));
         }
 
         match expected_type {
@@ -266,33 +266,6 @@ impl TableRowEncoder {
                 // Fallback to string representation for unsupported types
                 Self::convert_to_string_array(cells)
             }
-        }
-    }
-
-    /// Create an empty array of the specified type
-    fn create_empty_array(data_type: &ArrowDataType) -> Result<ArrayRef, ArrowError> {
-        match data_type {
-            ArrowDataType::Boolean => Ok(Arc::new(BooleanArray::from(Vec::<Option<bool>>::new()))),
-            ArrowDataType::Int16 => Ok(Arc::new(Int16Array::from(Vec::<Option<i16>>::new()))),
-            ArrowDataType::Int32 => Ok(Arc::new(Int32Array::from(Vec::<Option<i32>>::new()))),
-            ArrowDataType::Int64 => Ok(Arc::new(Int64Array::from(Vec::<Option<i64>>::new()))),
-            ArrowDataType::UInt32 => Ok(Arc::new(UInt32Array::from(Vec::<Option<u32>>::new()))),
-            ArrowDataType::Float32 => Ok(Arc::new(Float32Array::from(Vec::<Option<f32>>::new()))),
-            ArrowDataType::Float64 => Ok(Arc::new(Float64Array::from(Vec::<Option<f64>>::new()))),
-            ArrowDataType::Utf8 => Ok(Arc::new(StringArray::from(Vec::<Option<String>>::new()))),
-            ArrowDataType::Binary => Ok(Arc::new(BinaryArray::from(Vec::<Option<&[u8]>>::new()))),
-            ArrowDataType::Date32 => Ok(Arc::new(Date32Array::from(Vec::<Option<i32>>::new()))),
-            ArrowDataType::Time64(_) => Ok(Arc::new(Time64NanosecondArray::from(
-                Vec::<Option<i64>>::new(),
-            ))),
-            ArrowDataType::Timestamp(_, _) => Ok(Arc::new(TimestampMicrosecondArray::from(Vec::<
-                Option<i64>,
-            >::new(
-            )))),
-            ArrowDataType::Decimal128(_, _) => {
-                Ok(Arc::new(Decimal128Array::from(Vec::<Option<i128>>::new())))
-            }
-            _ => Ok(Arc::new(StringArray::from(Vec::<Option<String>>::new()))),
         }
     }
 

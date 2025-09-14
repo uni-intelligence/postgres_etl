@@ -1,5 +1,6 @@
 // Utilities related to constructing DataFusion expressions
 
+use crate::deltalake::schema::TableRowEncoder;
 use deltalake::datafusion::common::Column;
 use deltalake::datafusion::prelude::{Expr, lit};
 use etl::error::EtlResult;
@@ -11,7 +12,6 @@ pub fn cell_to_scalar_expr(
     schema: &PgTableSchema,
     col_idx: usize,
 ) -> EtlResult<Expr> {
-    use crate::deltalake::schema::TableRowEncoder;
     let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(
         &schema.column_schemas[col_idx].typ,
         schema.column_schemas[col_idx].modifier,
@@ -55,28 +55,25 @@ pub fn qualify_primary_keys(
     primary_keys: Vec<Expr>,
     source_alias: &str,
     target_alias: &str,
-) -> Expr {
+) -> Option<Expr> {
     primary_keys
         .into_iter()
-        .map(|key_expr| {
+        .filter_map(|key_expr| {
             // Extract column name from the expression
             let column_name = match key_expr {
-                Expr::Column(ref column) => column.name.clone(),
-                _ => panic!("Expected column expression for primary key"),
+                Expr::Column(column) => column.name,
+                _ => return None,
             };
 
-            // Create qualified column expressions for source and target
             let source_col = Expr::Column(Column::new(Some(source_alias), &column_name));
             let target_col = Expr::Column(Column::new(Some(target_alias), &column_name));
 
-            // Create equality expression: source.col = target.col
-            source_col.eq(target_col)
+            Some(source_col.eq(target_col))
         })
         .fold(None, |acc: Option<Expr>, eq_expr| match acc {
             None => Some(eq_expr),
             Some(acc) => Some(acc.and(eq_expr)),
         })
-        .expect("At least one primary key column is required")
 }
 
 #[cfg(test)]
@@ -282,7 +279,7 @@ mod tests {
 
         // Should create: source.id = target.id
         match result {
-            Expr::BinaryExpr(binary_expr) => {
+            Some(Expr::BinaryExpr(binary_expr)) => {
                 assert!(matches!(binary_expr.op, Eq));
 
                 // Left side should be source.id
@@ -314,7 +311,7 @@ mod tests {
 
         // Should create: src.tenant_id = tgt.tenant_id AND src.user_id = tgt.user_id
         match result {
-            Expr::BinaryExpr(binary_expr) => {
+            Some(Expr::BinaryExpr(binary_expr)) => {
                 assert!(matches!(binary_expr.op, And));
 
                 // Both sides should be equality expressions
@@ -357,8 +354,6 @@ mod tests {
         let primary_keys = vec![col("a"), col("b"), col("c")];
         let result = qualify_primary_keys(primary_keys, "s", "t");
 
-        // Should create: s.a = t.a AND s.b = t.b AND s.c = t.c
-        // Verify it's a nested AND structure
         fn verify_qualified_expression(
             expr: &Expr,
             expected_columns: &[&str],
@@ -402,7 +397,7 @@ mod tests {
         }
 
         assert!(verify_qualified_expression(
-            &result,
+            &result.unwrap(),
             &["a", "b", "c"],
             "s",
             "t"
@@ -410,12 +405,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "At least one primary key column is required")]
     fn test_qualify_primary_keys_empty_list() {
         let primary_keys: Vec<Expr> = vec![];
 
-        // This should panic as the function expects at least one primary key
-        qualify_primary_keys(primary_keys, "source", "target");
+        let res = qualify_primary_keys(primary_keys, "source", "target");
+        assert!(res.is_none());
     }
 
     #[test]
@@ -423,7 +417,7 @@ mod tests {
         let primary_keys = vec![col("key")];
         let result = qualify_primary_keys(primary_keys, "new_records", "existing_table");
 
-        match result {
+        match result.unwrap() {
             Expr::BinaryExpr(binary_expr) => match (&*binary_expr.left, &*binary_expr.right) {
                 (Expr::Column(src_col), Expr::Column(tgt_col)) => {
                     assert_eq!(src_col.relation, Some("new_records".into()));
@@ -438,10 +432,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Expected column expression for primary key")]
     fn test_qualify_primary_keys_invalid_expression() {
         // Pass a literal instead of a column expression
         let primary_keys = vec![lit(42)];
-        qualify_primary_keys(primary_keys, "source", "target");
+        let res = qualify_primary_keys(primary_keys, "source", "target");
+        assert!(res.is_none());
     }
 }

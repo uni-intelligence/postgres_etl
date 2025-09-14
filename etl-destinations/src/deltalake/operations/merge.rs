@@ -1,5 +1,5 @@
-use deltalake::DeltaOps;
 use deltalake::datafusion::prelude::SessionContext;
+use deltalake::{DeltaOps, DeltaTableError};
 use deltalake::{DeltaResult, DeltaTable, datafusion::prelude::Expr};
 use etl::types::{TableRow as PgTableRow, TableSchema as PgTableSchema};
 
@@ -18,13 +18,13 @@ pub async fn merge_to_table(
     let ops = DeltaOps::from(table);
     let rows = TableRowEncoder::encode_table_rows(table_schema, upsert_rows)?;
 
+    let qualified_primary_keys = qualify_primary_keys(primary_keys, "source", "target")
+        .ok_or(DeltaTableError::generic("Failed to qualify primary keys"))?;
+
     let ctx = SessionContext::new();
     let batch = ctx.read_batch(rows)?;
     let mut merge_builder = ops
-        .merge(
-            batch,
-            qualify_primary_keys(primary_keys, "source", "target"),
-        )
+        .merge(batch, qualified_primary_keys)
         .with_writer_properties(config.clone().into())
         .with_source_alias("source")
         .with_target_alias("target")
