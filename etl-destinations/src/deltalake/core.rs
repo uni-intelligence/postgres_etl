@@ -17,7 +17,7 @@ use tracing::{info, trace};
 use crate::deltalake::TableRowEncoder;
 use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::events::{materialize_events, materialize_events_append_only};
-use crate::deltalake::operations::append_to_table;
+use crate::deltalake::operations::{append_to_table, merge_to_table};
 use crate::deltalake::schema::postgres_to_delta_schema;
 
 /// Configuration for Delta Lake destination
@@ -235,16 +235,7 @@ where
         }
         .downgrade();
 
-        let _combined_predicate = if !delete_predicates.is_empty() {
-            Some(
-                delete_predicates
-                    .into_iter()
-                    .reduce(|acc, e| acc.or(e))
-                    .expect("non-empty predicates"),
-            )
-        } else {
-            None
-        };
+        let combined_predicate = delete_predicates.into_iter().reduce(|acc, e| acc.or(e));
 
         if !upsert_rows.is_empty() {
             trace!(
@@ -255,48 +246,25 @@ where
 
             let config = self.config_for_table_name(&table_schema.name.name);
             let mut table = table.lock().await;
-            // Fallback implementation: append upsert rows without merge/delete semantics.
-            // This ensures the pipeline makes forward progress and tests don't hang.
-            let record_batch = TableRowEncoder::encode_table_rows(table_schema, upsert_rows)
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::ConversionError,
-                        "Failed to encode table rows",
-                        format!("Error converting to Arrow: {}", e)
-                    )
-                })?;
 
-            append_to_table(&mut table, &config, record_batch)
-                .await
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::DestinationError,
-                        "Failed to append rows to Delta table",
-                        format!(
-                            "Error appending to table for table_id {}: {}",
-                            table_id.0, e
-                        )
+            merge_to_table(
+                &mut table,
+                &config,
+                table_schema,
+                upsert_rows,
+                combined_predicate,
+            )
+            .await
+            .map_err(|e| {
+                etl_error!(
+                    ErrorKind::DestinationError,
+                    "Failed to append rows to Delta table",
+                    format!(
+                        "Error appending to table for table_id {}: {}",
+                        table_id.0, e
                     )
-                })?;
-            // merge_to_table(
-            //     table,
-            //     &config,
-            //     table_schema,
-            //     primary_keys,
-            //     upsert_rows,
-            //     combined_predicate,
-            // )
-            // .await
-            // .map_err(|e| {
-            //     etl_error!(
-            //         ErrorKind::DestinationError,
-            //         "Failed to append rows to Delta table",
-            //         format!(
-            //             "Error appending to table for table_id {}: {}",
-            //             table_id.0, e
-            //         )
-            //     )
-            // })?;
+                )
+            })?;
         }
 
         Ok(())

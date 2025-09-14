@@ -73,8 +73,8 @@ pub async fn start_replicator_with_config(
         DestinationConfig::DeltaLake {
             base_uri,
             storage_options,
-            partition_columns,
-            optimize_after_commits,
+            partition_columns: _,
+            optimize_after_commits: _,
         } => {
             let destination = DeltaLakeDestination::new(
                 state_store.clone(),
