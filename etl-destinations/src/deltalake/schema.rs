@@ -1007,7 +1007,6 @@ mod tests {
     fn test_empty_table_rows() {
         let schema = create_test_schema();
         let result = TableRowEncoder::encode_table_rows(&schema, vec![]);
-        println!("result: {:?}", result);
         assert!(result.is_ok());
         assert!(result.unwrap().num_rows() == 0);
     }

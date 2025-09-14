@@ -4,8 +4,8 @@ use deltalake::{DeltaResult, DeltaTable, datafusion::prelude::Expr};
 use etl::types::{TableRow as PgTableRow, TableSchema as PgTableSchema};
 
 use crate::deltalake::TableRowEncoder;
+use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::expr::qualify_primary_keys;
-use crate::deltalake::table::DeltaTableConfig;
 
 pub async fn merge_to_table(
     table: DeltaTable,

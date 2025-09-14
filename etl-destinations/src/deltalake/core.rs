@@ -15,10 +15,10 @@ use tokio::sync::Mutex;
 use tracing::{info, trace};
 
 use crate::deltalake::TableRowEncoder;
+use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::events::{materialize_events, materialize_events_append_only};
-use crate::deltalake::operations::{append_to_table, merge_to_table};
+use crate::deltalake::operations::append_to_table;
 use crate::deltalake::schema::postgres_to_delta_schema;
-use crate::deltalake::table::DeltaTableConfig;
 
 /// Configuration for Delta Lake destination
 #[derive(Debug, Clone)]
@@ -267,7 +267,7 @@ where
             );
 
             let config = self.config_for_table_name(&table_schema.name.name);
-            let mut table = table.lock().await;
+            let table = table.lock().await;
             todo!();
             // merge_to_table(
             //     table,

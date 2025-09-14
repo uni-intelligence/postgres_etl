@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::migrations::migrate_state_store;
 use etl::destination::Destination;
 use etl::destination::memory::MemoryDestination;
@@ -79,8 +81,7 @@ pub async fn start_replicator_with_config(
                 DeltaDestinationConfig {
                     base_uri: base_uri.clone(),
                     storage_options: storage_options.clone(),
-                    partition_columns: partition_columns.clone(),
-                    optimize_after_commits: optimize_after_commits.map(|n| n.try_into().unwrap()),
+                    table_config: HashMap::new(),
                 },
             );
 

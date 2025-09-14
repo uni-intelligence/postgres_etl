@@ -4,7 +4,7 @@ use deltalake::{
     writer::{DeltaWriter, RecordBatchWriter},
 };
 
-use crate::deltalake::table::DeltaTableConfig;
+use crate::deltalake::config::DeltaTableConfig;
 
 /// Appends a record batch to a Delta table
 pub async fn append_to_table(

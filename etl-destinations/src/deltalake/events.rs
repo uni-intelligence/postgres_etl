@@ -49,9 +49,8 @@ pub fn materialize_events_append_only<'a>(
 
     let mut upsert_rows: Vec<&PgTableRow> = Vec::new();
     for (_, reg) in crdt_by_key.into_iter() {
-        match reg.val {
-            RowOp::Upsert(row) => upsert_rows.push(row),
-            _ => {}
+        if let RowOp::Upsert(row) = reg.val {
+            upsert_rows.push(row)
         }
     }
 
@@ -125,8 +124,8 @@ pub fn materialize_events<'a>(
 mod tests {
     use super::*;
     use etl::types::{
-        Cell as PgCell, ColumnSchema as PgColumnSchema, DeleteEvent, InsertEvent, PgLsn, TableId,
-        TableName, TableRow as PgTableRow, TableSchema as PgTableSchema, Type, UpdateEvent,
+        Cell as PgCell, ColumnSchema as PgColumnSchema, DeleteEvent, InsertEvent, TableId,
+        TableName, Type as PgType, UpdateEvent,
     };
 
     fn schema_single_pk(table_id: TableId) -> PgTableSchema {
@@ -136,14 +135,14 @@ mod tests {
             vec![
                 PgColumnSchema {
                     name: "id".to_string(),
-                    typ: Type::INT8,
+                    typ: PgType::INT8,
                     modifier: -1,
                     primary: true,
                     nullable: false,
                 },
                 PgColumnSchema {
                     name: "name".to_string(),
-                    typ: Type::TEXT,
+                    typ: PgType::TEXT,
                     modifier: -1,
                     primary: false,
                     nullable: true,
@@ -165,21 +164,21 @@ mod tests {
             vec![
                 PgColumnSchema {
                     name: "tenant_id".to_string(),
-                    typ: Type::INT4,
+                    typ: PgType::INT4,
                     modifier: -1,
                     primary: true,
                     nullable: false,
                 },
                 PgColumnSchema {
                     name: "user_id".to_string(),
-                    typ: Type::INT8,
+                    typ: PgType::INT8,
                     modifier: -1,
                     primary: true,
                     nullable: false,
                 },
                 PgColumnSchema {
                     name: "name".to_string(),
-                    typ: Type::TEXT,
+                    typ: PgType::TEXT,
                     modifier: -1,
                     primary: false,
                     nullable: true,
