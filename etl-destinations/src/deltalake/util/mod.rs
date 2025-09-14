@@ -1,3 +1,3 @@
 mod lwwreg;
 
-pub use lwwreg::LWWReg;
+pub(crate) use lwwreg::LWWReg;

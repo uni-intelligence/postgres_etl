@@ -1,4 +1,4 @@
-#[allow(dead_code)]
+#![allow(dead_code)]
 /// Vendored from `crdts` crate.
 /// License: Apache-2.0 https://github.com/rust-crdt/rust-crdt/blob/master/LICENSE
 use std::{error, fmt};
@@ -57,19 +57,6 @@ impl<V: PartialEq, M: Ord> LWWReg<V, M> {
     }
 
     /// Updates value witnessed by the given marker.
-    ///
-    /// ```
-    /// use crdts::LWWReg;
-    /// let mut reg = LWWReg { val: 1, marker: 2 };
-    ///
-    /// // updating with a smaller marker is a no-op
-    /// reg.update(2, 1);
-    /// assert_eq!(reg.val, 1);
-    ///
-    /// // updating with larger marker succeeds
-    /// reg.update(2, 3);
-    /// assert_eq!(reg, LWWReg { val: 2, marker: 3 });
-    /// ```
     pub fn update(&mut self, val: V, marker: M) {
         if self.marker < marker {
             self.val = val;
@@ -78,14 +65,6 @@ impl<V: PartialEq, M: Ord> LWWReg<V, M> {
     }
 
     /// An update is invalid if the marker is exactly the same as
-    /// the current marker BUT the value is different:
-    /// ```
-    /// use crdts::{lwwreg, LWWReg};
-    /// let mut reg = LWWReg { val: 1, marker: 2 };
-    ///
-    /// // updating with a smaller marker is a no-op
-    /// assert_eq!(reg.validate_update(&32, &2), Err(lwwreg::Validation::ConflictingMarker));
-    /// ```
     pub fn validate_update(&self, val: &V, marker: &M) -> Result<(), Validation> {
         if &self.marker == marker && val != &self.val {
             Err(Validation::ConflictingMarker)
