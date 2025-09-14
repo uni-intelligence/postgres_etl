@@ -1,4 +1,5 @@
 mod core;
+mod events;
 mod operations;
 mod schema;
 mod table;

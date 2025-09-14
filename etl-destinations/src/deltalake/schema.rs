@@ -12,6 +12,9 @@ use deltalake::arrow::datatypes::{
 };
 use deltalake::arrow::error::ArrowError;
 use deltalake::arrow::record_batch::RecordBatch;
+use deltalake::datafusion::scalar::ScalarValue;
+use etl::error::{ErrorKind, EtlResult};
+use etl::etl_error;
 use etl::types::{
     ArrayCell as PGArrayCell, Cell as PGCell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT,
     TIMESTAMPTZ_FORMAT_HH_MM, TableRow as PGTableRow, TableSchema as PGTableSchema, Type as PGType,
@@ -62,7 +65,7 @@ impl TableRowEncoder {
     }
 
     /// Convert Postgres PGTableSchema to Arrow Schema with proper type mapping
-    fn postgres_schema_to_arrow_schema(
+    pub(crate) fn postgres_schema_to_arrow_schema(
         table_schema: &PGTableSchema,
     ) -> Result<ArrowSchema, ArrowError> {
         let fields: Vec<ArrowField> = table_schema
@@ -729,6 +732,30 @@ impl TableRowEncoder {
 
         Ok(Arc::new(StringArray::from(values)))
     }
+
+    /// Convert a single PGCell to a DataFusion ScalarValue according to the provided Arrow DataType.
+    pub(crate) fn cell_to_scalar_value_for_arrow(
+        cell: &PGCell,
+        expected_type: &ArrowDataType,
+    ) -> EtlResult<ScalarValue> {
+        // Reuse array conversion for a single element, then extract ScalarValue at index 0.
+        let arr =
+            Self::convert_cell_column_to_arrow_array(vec![cell], expected_type).map_err(|e| {
+                etl_error!(
+                    ErrorKind::ConversionError,
+                    "Failed converting Cell to Arrow array for ScalarValue",
+                    e
+                )
+            })?;
+
+        ScalarValue::try_from_array(&arr, 0).map_err(|e| {
+            etl_error!(
+                ErrorKind::ConversionError,
+                "Failed converting Arrow array to ScalarValue",
+                e
+            )
+        })
+    }
 }
 
 /// Convert a Postgres type to Delta DataType using delta-kernel's conversion traits
@@ -977,7 +1004,7 @@ mod tests {
         let schema = create_test_schema();
         let result = TableRowEncoder::encode_table_rows(&schema, vec![]);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        assert!(result.unwrap().num_rows() == 0);
     }
 
     #[test]
@@ -990,12 +1017,9 @@ mod tests {
         let result = TableRowEncoder::encode_table_rows(&schema, rows);
         assert!(result.is_ok());
 
-        let batches = result.unwrap();
-        assert_eq!(batches.len(), 1);
-
-        let batch = &batches[0];
+        let batch = result.unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 12); // All test columns
+        assert_eq!(batch.num_columns(), 12);
     }
 
     #[test]
