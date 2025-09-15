@@ -88,7 +88,8 @@ impl MinioDeltaLakeDatabase {
     where
         S: StateStore + SchemaStore + Send + Sync,
     {
-        self.build_destination_with_config(store, HashMap::new()).await
+        self.build_destination_with_config(store, HashMap::new())
+            .await
     }
 
     /// Creates a [`DeltaLakeDestination`] with a custom per-table configuration map.

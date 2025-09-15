@@ -117,7 +117,11 @@ async fn append_only_ignores_updates_and_deletes() {
     users_state_notify.notified().await;
 
     let event_notify = destination
-        .wait_for_events_count(vec![(EventType::Insert, 1), (EventType::Update, 2), (EventType::Delete, 1)])
+        .wait_for_events_count(vec![
+            (EventType::Insert, 1),
+            (EventType::Update, 2),
+            (EventType::Delete, 1),
+        ])
         .await;
 
     database
