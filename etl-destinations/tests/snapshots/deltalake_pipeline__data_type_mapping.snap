@@ -1,0 +1,22 @@
+---
+source: etl-destinations/tests/deltalake_pipeline.rs
+expression: table_name_ref
+---
+# Schema
+- id: Primitive(Long) nullable=false
+- name: Primitive(String) nullable=true
+- age: Primitive(Integer) nullable=true
+- height: Primitive(Double) nullable=true
+- active: Primitive(Boolean) nullable=true
+- birth_date: Primitive(Date) nullable=true
+- created_at: Primitive(TimestampNtz) nullable=true
+- updated_at: Primitive(Timestamp) nullable=true
+- profile_data: Primitive(Binary) nullable=true
+- salary: Primitive(Decimal(DecimalType { precision: 10, scale: 2 })) nullable=true
+
+# Data
++----+----------+-----+--------+--------+------------+---------------------+----------------------+--------------+----------+
+| id | name     | age | height | active | birth_date | created_at          | updated_at           | profile_data | salary   |
++----+----------+-----+--------+--------+------------+---------------------+----------------------+--------------+----------+
+| 1  | John Doe | 30  | 5.9    | true   | 1993-01-15 | 2023-01-01T12:00:00 | 2023-01-01T12:00:00Z | 48656c6c6f   | 12345.68 |
++----+----------+-----+--------+--------+------------+---------------------+----------------------+--------------+----------+

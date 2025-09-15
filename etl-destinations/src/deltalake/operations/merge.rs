@@ -1,6 +1,6 @@
 use deltalake::DeltaTableError;
 use deltalake::datafusion::common::Column;
-use deltalake::datafusion::prelude::SessionContext;
+use deltalake::datafusion::prelude::{SessionContext, col};
 use deltalake::operations::merge::MergeBuilder;
 use deltalake::{DeltaResult, DeltaTable, datafusion::prelude::Expr};
 use etl::types::{TableRow as PgTableRow, TableSchema as PgTableSchema};
@@ -19,7 +19,7 @@ pub async fn merge_to_table(
     let rows = TableRowEncoder::encode_table_rows(table_schema, upsert_rows)?;
 
     let ctx = SessionContext::new();
-    let batch = ctx.read_batch(rows)?;
+    let batch = ctx.read_batch(rows.clone())?;
 
     // TODO(abhi): We should proabbly be passing this information in
     let primary_keys = table_schema
@@ -40,12 +40,27 @@ pub async fn merge_to_table(
         batch,
     );
 
+    // TODO(abhi): Clean up this mess
+    let all_columns: Vec<String> = table_schema
+        .column_schemas
+        .iter()
+        .map(|col| col.name.clone())
+        .collect();
+
     let mut merge_builder = merge_builder
         .with_writer_properties(config.clone().into())
         .with_source_alias("source")
         .with_target_alias("target")
-        .when_not_matched_insert(|insert| insert)?
-        .when_matched_update(|update| update)?;
+        .when_not_matched_insert(|insert| {
+            all_columns.iter().fold(insert, |insert, column| {
+                insert.set(column.clone(), col(format!("source.{}", column.clone())))
+            })
+        })?
+        .when_matched_update(|update| {
+            all_columns.iter().fold(update, |update, column| {
+                update.update(column.clone(), col(format!("source.{}", column.clone())))
+            })
+        })?;
 
     if let Some(delete_predicate) = delete_predicate {
         merge_builder = merge_builder

@@ -1,0 +1,17 @@
+---
+source: etl-destinations/tests/deltalake_pipeline.rs
+expression: orders_table
+---
+# Schema
+- id: Primitive(Long) nullable=false
+- description: Primitive(String) nullable=false
+
+# Data
++----+---------------+
+| id | description   |
++----+---------------+
+| 1  | description_1 |
+| 2  | description_2 |
+| 3  | description_3 |
+| 4  | description_4 |
++----+---------------+

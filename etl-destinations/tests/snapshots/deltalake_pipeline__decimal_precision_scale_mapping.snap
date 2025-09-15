@@ -1,0 +1,18 @@
+---
+source: etl-destinations/tests/deltalake_pipeline.rs
+expression: table_name_ref
+---
+# Schema
+- id: Primitive(Long) nullable=false
+- price: Primitive(Decimal(DecimalType { precision: 10, scale: 2 })) nullable=true
+- percentage: Primitive(Decimal(DecimalType { precision: 5, scale: 4 })) nullable=true
+- large_number: Primitive(Decimal(DecimalType { precision: 18, scale: 6 })) nullable=true
+- currency: Primitive(Decimal(DecimalType { precision: 15, scale: 3 })) nullable=true
+
+# Data
++----+--------+------------+----------------+-----------+
+| id | price  | percentage | large_number   | currency  |
++----+--------+------------+----------------+-----------+
+| 1  | 123.45 | 0.9876     | 1234567.123456 | 9999.999  |
+| 2  | 999.99 | 0.0001     | 999999.999999  | 12345.678 |
++----+--------+------------+----------------+-----------+

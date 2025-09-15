@@ -1,0 +1,18 @@
+---
+source: etl-destinations/tests/deltalake_pipeline.rs
+expression: users_table
+---
+# Schema
+- id: Primitive(Long) nullable=false
+- name: Primitive(String) nullable=false
+- age: Primitive(Integer) nullable=false
+
+# Data
++----+--------+-----+
+| id | name   | age |
++----+--------+-----+
+| 1  | user_1 | 1   |
+| 2  | user_2 | 2   |
+| 3  | user_3 | 3   |
+| 4  | user_4 | 4   |
++----+--------+-----+
