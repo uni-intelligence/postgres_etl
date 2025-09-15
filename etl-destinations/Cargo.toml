@@ -46,7 +46,7 @@ gcp-bigquery-client = { workspace = true, optional = true, features = [
 futures = { workspace = true, optional = true }
 iceberg = { workspace = true, optional = true }
 iceberg-catalog-rest = { workspace = true, optional = true }
-parquet = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true, features = ["async", "arrow"] }
 prost = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = [
     "aws-lc-rs",
