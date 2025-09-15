@@ -8,8 +8,4 @@ expression: users_table
 - age: Primitive(Integer) nullable=false
 
 # Data
-+----+---------+-----+
-| id | name    | age |
-+----+---------+-----+
-| 1  | user_10 | 10  |
-+----+---------+-----+
+<empty>
