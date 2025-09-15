@@ -72,6 +72,105 @@ macro_rules! assert_table_snapshot {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn append_only_ignores_updates_and_deletes() {
+    init_test_tracing();
+
+    let database = spawn_source_database().await;
+    let database_schema = setup_test_database_schema(&database, TableSelection::UsersOnly).await;
+
+    let delta_database = setup_delta_connection().await;
+
+    let store = NotifyingStore::new();
+
+    // Configure append_only for the users table only
+    let mut table_config = std::collections::HashMap::new();
+    table_config.insert(
+        database_schema.users_schema().name.name.clone(),
+        etl_destinations::deltalake::DeltaTableConfig {
+            append_only: true,
+            ..Default::default()
+        },
+    );
+
+    let raw_destination = delta_database
+        .build_destination_with_config(store.clone(), table_config)
+        .await;
+    let destination = TestDestinationWrapper::wrap(raw_destination);
+
+    let pipeline_id: PipelineId = rand::random();
+    let mut pipeline = create_pipeline(
+        &database.config,
+        pipeline_id,
+        database_schema.publication_name(),
+        store.clone(),
+        destination.clone(),
+    );
+
+    let users_state_notify = store
+        .notify_on_table_state(
+            database_schema.users_schema().id,
+            TableReplicationPhaseType::SyncDone,
+        )
+        .await;
+
+    pipeline.start().await.unwrap();
+    users_state_notify.notified().await;
+
+    let event_notify = destination
+        .wait_for_events_count(vec![(EventType::Insert, 1), (EventType::Update, 2), (EventType::Delete, 1)])
+        .await;
+
+    database
+        .insert_values(
+            database_schema.users_schema().name.clone(),
+            &["name", "age"],
+            &[&"append_user", &10],
+        )
+        .await
+        .unwrap();
+
+    // Perform updates that should be ignored
+    database
+        .update_values(
+            database_schema.users_schema().name.clone(),
+            &["name", "age"],
+            &[&"append_user_v2", &20],
+        )
+        .await
+        .unwrap();
+
+    database
+        .update_values(
+            database_schema.users_schema().name.clone(),
+            &["name", "age"],
+            &[&"append_user_final", &30],
+        )
+        .await
+        .unwrap();
+
+    // And a delete that should be ignored
+    database
+        .delete_values(
+            database_schema.users_schema().name.clone(),
+            &["name"],
+            &["'append_user_final'"],
+            "",
+        )
+        .await
+        .unwrap();
+
+    event_notify.notified().await;
+    pipeline.shutdown_and_wait().await.unwrap();
+
+    let users_table = &database_schema.users_schema().name;
+    assert_table_snapshot!(
+        "append_only_ignores_updates_and_deletes",
+        &delta_database,
+        users_table
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn upsert_merge_validation() {
     init_test_tracing();
 

@@ -5,7 +5,7 @@ use deltalake::{DeltaResult, DeltaTable, open_table_with_storage_options};
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
 use etl::types::TableName;
-use etl_destinations::deltalake::{DeltaDestinationConfig, DeltaLakeDestination};
+use etl_destinations::deltalake::{DeltaDestinationConfig, DeltaLakeDestination, DeltaTableConfig};
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
@@ -88,7 +88,18 @@ impl MinioDeltaLakeDatabase {
     where
         S: StateStore + SchemaStore + Send + Sync,
     {
-        // Create storage options HashMap with AWS-compatible settings for MinIO
+        self.build_destination_with_config(store, HashMap::new()).await
+    }
+
+    /// Creates a [`DeltaLakeDestination`] with a custom per-table configuration map.
+    pub async fn build_destination_with_config<S>(
+        &self,
+        store: S,
+        table_config: HashMap<String, DeltaTableConfig>,
+    ) -> DeltaLakeDestination<S>
+    where
+        S: StateStore + SchemaStore + Send + Sync,
+    {
         let mut storage_options = HashMap::new();
         storage_options.insert("endpoint".to_string(), self.endpoint.clone());
         storage_options.insert("access_key_id".to_string(), self.access_key.clone());
@@ -102,7 +113,7 @@ impl MinioDeltaLakeDatabase {
         let config = DeltaDestinationConfig {
             base_uri: self.s3_base_uri.clone(),
             storage_options: Some(storage_options),
-            table_config: HashMap::new(),
+            table_config,
         };
 
         DeltaLakeDestination::new(store, config)
