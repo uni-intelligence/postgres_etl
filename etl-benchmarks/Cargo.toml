@@ -7,10 +7,15 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = ["bigquery", "deltalake"]
+bigquery = ["etl-destinations/bigquery"]
+deltalake = ["etl-destinations/deltalake"]
+
 [dev-dependencies]
 etl = { workspace = true, features = ["test-utils"] }
 etl-config = { workspace = true }
-etl-destinations = { workspace = true, features = ["bigquery"] }
+etl-destinations = { workspace = true }
 etl-postgres = { workspace = true, features = ["sqlx"] }
 etl-telemetry = { workspace = true }
 

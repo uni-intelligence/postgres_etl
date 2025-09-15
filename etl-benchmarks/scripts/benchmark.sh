@@ -8,6 +8,7 @@ set -eo pipefail
 # Supported destinations:
 # - null: Discards all data (fastest, default)
 # - big-query: Streams data to Google BigQuery
+# - delta-lake: Writes to a Delta Lake table store (delta-rs)
 #
 # Environment Variables:
 #   Database Configuration:
@@ -15,7 +16,7 @@ set -eo pipefail
 #   
 #   Benchmark Configuration:
 #     HYPERFINE_RUNS, PUBLICATION_NAME, BATCH_MAX_SIZE, BATCH_MAX_FILL_MS, MAX_TABLE_SYNC_WORKERS
-#     DESTINATION (null or big-query)
+#     DESTINATION (null, big-query, or delta-lake)
 #     LOG_TARGET (terminal or file) - Where to send logs (default: terminal)
 #     DRY_RUN (true/false) - Show commands without executing them
 #   
@@ -24,6 +25,11 @@ set -eo pipefail
 #     BQ_DATASET_ID - BigQuery dataset ID
 #     BQ_SA_KEY_FILE - Path to service account key JSON file
 #     BQ_MAX_STALENESS_MINS - Optional staleness setting
+#     BQ_MAX_CONCURRENT_STREAMS - Optional concurrent stream hint
+#
+#   Delta Lake Configuration (required when DESTINATION=delta-lake):
+#     DELTA_BASE_URI - Base URI for the Delta Lake tables, e.g. s3://bucket/path
+#     DELTA_STORAGE_OPTIONS - Optional comma-separated key=value pairs for object store options
 #
 # Examples:
 #   # Run with null destination and terminal logs (default)
@@ -40,6 +46,12 @@ set -eo pipefail
 #   BQ_PROJECT_ID=my-project \
 #   BQ_DATASET_ID=my_dataset \
 #   BQ_SA_KEY_FILE=/path/to/sa-key.json \
+#   ./etl-benchmarks/scripts/benchmark.sh
+#
+#   # Run with Delta Lake destination (MinIO example)
+#   DESTINATION=delta-lake \
+#   DELTA_BASE_URI=s3://delta-dev-and-test/bench \
+#   DELTA_STORAGE_OPTIONS="endpoint=http://localhost:9010,access_key_id=minio,secret_access_key=minio-password,allow_http=true" \
 #   ./etl-benchmarks/scripts/benchmark.sh
 
 # Check if hyperfine is installed
@@ -75,12 +87,16 @@ MAX_TABLE_SYNC_WORKERS="${MAX_TABLE_SYNC_WORKERS:=8}"
 LOG_TARGET="${LOG_TARGET:=terminal}"  # terminal or file
 
 # Destination configuration
-DESTINATION="${DESTINATION:=null}"  # null or big-query
+DESTINATION="${DESTINATION:=null}"  # null, big-query, or delta-lake
 BQ_PROJECT_ID="${BQ_PROJECT_ID:=}"
 BQ_DATASET_ID="${BQ_DATASET_ID:=}"
 BQ_SA_KEY_FILE="${BQ_SA_KEY_FILE:=}"
 BQ_MAX_STALENESS_MINS="${BQ_MAX_STALENESS_MINS:=}"
 BQ_MAX_CONCURRENT_STREAMS="${BQ_MAX_CONCURRENT_STREAMS:=}"
+DELTA_BASE_URI="${DELTA_BASE_URI:=}"
+DELTA_STORAGE_OPTIONS="${DELTA_STORAGE_OPTIONS:=}"
+
+IFS=',' read -r -a DELTA_STORAGE_OPTIONS_ARRAY <<< "${DELTA_STORAGE_OPTIONS}"
 
 # Optional dry-run mode
 DRY_RUN="${DRY_RUN:=false}"
@@ -105,6 +121,11 @@ if [[ "${DESTINATION}" == "big-query" ]]; then
   fi
   if [[ -n "${BQ_MAX_CONCURRENT_STREAMS}" ]]; then
     echo "   BigQuery Max Concurrent Streams: ${BQ_MAX_CONCURRENT_STREAMS}"
+  fi
+elif [[ "${DESTINATION}" == "delta-lake" ]]; then
+  echo "   Delta Lake Base URI: ${DELTA_BASE_URI}"
+  if [[ -n "${DELTA_STORAGE_OPTIONS}" ]]; then
+    echo "   Delta Lake Storage Options: ${DELTA_STORAGE_OPTIONS}"
   fi
 fi
 
@@ -143,17 +164,34 @@ if [[ "${DESTINATION}" == "big-query" ]]; then
     echo "❌ Error: BigQuery service account key file does not exist: ${BQ_SA_KEY_FILE}"
     exit 1
   fi
+elif [[ "${DESTINATION}" == "delta-lake" ]]; then
+  if [[ -z "${DELTA_BASE_URI}" ]]; then
+    echo "❌ Error: DELTA_BASE_URI environment variable is required when using Delta Lake destination."
+    exit 1
+  fi
+  for opt in "${DELTA_STORAGE_OPTIONS_ARRAY[@]}"; do
+    [[ -z "${opt}" ]] && continue
+    if [[ "${opt}" != *=* ]]; then
+      echo "❌ Error: Invalid DELTA_STORAGE_OPTIONS entry '${opt}'. Expected key=value format."
+      exit 1
+    fi
+  done
 fi
 
 # Determine if we need BigQuery features
 FEATURES_FLAG=""
-if [[ "${DESTINATION}" == "big-query" ]]; then
-  FEATURES_FLAG="--features bigquery"
-fi
+case "${DESTINATION}" in
+  big-query)
+    FEATURES_FLAG="--features bigquery"
+    ;;
+  delta-lake)
+    FEATURES_FLAG="--features deltalake"
+    ;;
+esac
 
 # Validate destination option
-if [[ "${DESTINATION}" != "null" && "${DESTINATION}" != "big-query" ]]; then
-  echo "❌ Error: Invalid destination '${DESTINATION}'. Supported values: null, big-query"
+if [[ "${DESTINATION}" != "null" && "${DESTINATION}" != "big-query" && "${DESTINATION}" != "delta-lake" ]]; then
+  echo "❌ Error: Invalid destination '${DESTINATION}'. Supported values: null, big-query, delta-lake"
   exit 1
 fi
 
@@ -188,6 +226,12 @@ if [[ "${DESTINATION}" == "big-query" ]]; then
   if [[ -n "${BQ_MAX_CONCURRENT_STREAMS}" ]]; then
     RUN_CMD="${RUN_CMD} --bq-max-concurrent-streams ${BQ_MAX_CONCURRENT_STREAMS}"
   fi
+elif [[ "${DESTINATION}" == "delta-lake" ]]; then
+  RUN_CMD="${RUN_CMD} --delta-base-uri ${DELTA_BASE_URI}"
+  for opt in "${DELTA_STORAGE_OPTIONS_ARRAY[@]}"; do
+    [[ -z "${opt}" ]] && continue
+    RUN_CMD="${RUN_CMD} --delta-storage-option ${opt}"
+  done
 fi
 
 echo ""

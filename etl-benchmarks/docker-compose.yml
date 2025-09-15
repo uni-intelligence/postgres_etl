@@ -1,0 +1,103 @@
+# Docker Compose setup for ETL benchmarks.
+#
+# Provides a Postgres database seeded with TPC-H data using the go-tpc project.
+# Includes an optional "minio" profile for running an S3-compatible object
+# store useful when benchmarking Delta Lake destinations.
+services:
+  postgres:
+    image: postgres:16
+    container_name: etl-benchmarks-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-bench}
+    ports:
+      - "${POSTGRES_PORT:-5430}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-bench}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  tpch-seeder:
+    image: golang:1.22
+    container_name: etl-benchmarks-tpch-seeder
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT_INTERNAL:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-bench}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      TPCH_SCALE_FACTOR: ${TPCH_SCALE_FACTOR:-1}
+      GO_TPC_VERSION: ${GO_TPC_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      set -euo pipefail;
+      apt-get update >/dev/null;
+      apt-get install -y --no-install-recommends postgresql-client >/dev/null;
+      rm -rf /var/lib/apt/lists/*;
+      go install github.com/pingcap/go-tpc/cmd/go-tpc@${GO_TPC_VERSION};
+      export PATH="${PATH}:/go/bin";
+      echo "Waiting for Postgres at ${POSTGRES_HOST}:${POSTGRES_PORT}...";
+      until pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER}; do
+        sleep 2;
+      done;
+      echo "Postgres is ready. Loading TPC-H data...";
+      go-tpc tpch prepare \
+        --sf ${TPCH_SCALE_FACTOR} \
+        -H ${POSTGRES_HOST} \
+        -P ${POSTGRES_PORT} \
+        -D ${POSTGRES_DB} \
+        -U ${POSTGRES_USER} \
+        -p ${POSTGRES_PASSWORD} \
+        --analyze;
+      echo "TPC-H data loaded.";
+    restart: "no"
+
+  # Optional MinIO profile for S3-compatible storage used by Delta Lake.
+  minio:
+    profiles: ["minio"]
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: etl-benchmarks-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio-admin-password}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_PORT:-9010}:9000"
+      - "${MINIO_CONSOLE_PORT:-9011}:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-setup:
+    profiles: ["minio"]
+    image: minio/mc:RELEASE.2024-10-06T11-22-18Z
+    container_name: etl-benchmarks-minio-setup
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio-admin-password}
+      MINIO_BUCKET: ${MINIO_BUCKET:-delta-dev-and-test}
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      set -euo pipefail;
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; do
+        echo "Waiting for MinIO...";
+        sleep 2;
+      done;
+      mc mb -p local/${MINIO_BUCKET};
+      mc anonymous set download local/${MINIO_BUCKET};
+      echo "MinIO bucket '${MINIO_BUCKET}' ready.";
+    restart: "no"
+
+volumes:
+  postgres-data:
+  minio-data:

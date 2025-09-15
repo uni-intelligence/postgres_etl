@@ -13,6 +13,7 @@ Before running benchmarks, ensure you have:
 - A Postgres database set up
 - A publication created with the tables you want to benchmark
 - For BigQuery benchmarks: GCP project, dataset, and service account key file
+- For Delta Lake benchmarks: Accessible storage URI (e.g., `s3://bucket/path`) and any required object store credentials
 
 ## Quick Start
 
@@ -55,6 +56,23 @@ cargo bench --bench table_copies --features bigquery -- --log-target terminal ru
   --bq-sa-key-file /path/to/service-account-key.json
 ```
 
+### 4. Run Delta Lake Benchmark
+
+Benchmark against a Delta Lake table store:
+
+```bash
+cargo bench --bench table_copies -- --log-target terminal run \
+  --host localhost --port 5432 --database bench \
+  --username postgres --password mypass \
+  --publication-name bench_pub \
+  --table-ids 1,2,3 \
+  --destination delta-lake \
+  --delta-base-uri s3://my-bucket/my-warehouse \
+  --delta-storage-option endpoint=http://localhost:9010 \
+  --delta-storage-option access_key_id=minio \
+  --delta-storage-option secret_access_key=minio-secret
+```
+
 ## Command Reference
 
 ### Common Parameters
@@ -68,7 +86,7 @@ cargo bench --bench table_copies --features bigquery -- --log-target terminal ru
 | `--password`         | Postgres password                        | (optional)  |
 | `--publication-name` | Publication to replicate from            | `bench_pub` |
 | `--table-ids`        | Comma-separated table IDs to replicate   | (required)  |
-| `--destination`      | Destination type (`null` or `big-query`) | `null`      |
+| `--destination`      | Destination type (`null`, `big-query`, or `delta-lake`) | `null`      |
 
 ### Performance Tuning Parameters
 
@@ -86,6 +104,13 @@ cargo bench --bench table_copies --features bigquery -- --log-target terminal ru
 | `--bq-dataset-id`         | BigQuery dataset ID           | Yes                   |
 | `--bq-sa-key-file`        | Service account key file path | Yes                   |
 | `--bq-max-staleness-mins` | Max staleness in minutes      | No                    |
+
+### Delta Lake Parameters
+
+| Parameter                 | Description                                      | Required for Delta Lake |
+| ------------------------- | ------------------------------------------------ | ----------------------- |
+| `--delta-base-uri`        | Base URI for Delta tables (e.g., `s3://bucket`)  | Yes                     |
+| `--delta-storage-option`  | Extra storage option in `key=value` form. Repeat per option. | No |
 
 ### Logging Options
 
@@ -130,3 +155,22 @@ cargo bench --bench table_copies --features bigquery -- --log-target terminal ru
 ```
 
 The benchmark will measure the time it takes to complete the initial table copy phase for all specified tables.
+
+## Local Docker Environment
+
+Start a ready-to-benchmark Postgres instance seeded with TPC-H data via Docker Compose:
+
+```bash
+cd etl-benchmarks
+docker compose up postgres tpch-seeder
+```
+
+The `tpch-seeder` service builds and runs the [`go-tpc`](https://github.com/pingcap/go-tpc) TPC-H loader against the Postgres container after it becomes healthy. Adjust credentials, port mapping, scale factor, or the go-tpc version by exporting `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`, `TPCH_SCALE_FACTOR`, or `GO_TPC_VERSION` before launching Compose.
+
+To add an S3-compatible target for Delta Lake benchmarking, enable the optional `minio` profile:
+
+```bash
+docker compose --profile minio up postgres tpch-seeder minio minio-setup
+```
+
+This exposes MinIO on `http://localhost:9010` (console on `http://localhost:9011`) with credentials `minio-admin` / `minio-admin-password` and creates the bucket defined by `MINIO_BUCKET` (default `delta-dev-and-test`).

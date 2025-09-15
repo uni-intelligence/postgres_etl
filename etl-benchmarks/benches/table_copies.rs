@@ -8,10 +8,13 @@ use etl::types::{Event, TableRow};
 use etl_config::Environment;
 use etl_config::shared::{BatchConfig, PgConnectionConfig, PipelineConfig, TlsConfig};
 use etl_destinations::bigquery::{BigQueryDestination, install_crypto_provider_for_bigquery};
+use etl_destinations::deltalake::{DeltaDestinationConfig, DeltaLakeDestination};
 use etl_postgres::types::TableId;
 use etl_telemetry::tracing::init_tracing;
 use sqlx::postgres::PgPool;
+use std::collections::HashMap;
 use std::error::Error;
+use std::str::FromStr;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -52,8 +55,11 @@ enum DestinationType {
     Null,
     /// Use BigQuery as the destination
     BigQuery,
+    /// Use Delta Lake as the destination
+    DeltaLake,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Run the table copies benchmark
@@ -112,6 +118,12 @@ enum Commands {
         /// BigQuery maximum concurrent streams (optional)
         #[arg(long, default_value = "32")]
         bq_max_concurrent_streams: usize,
+        /// Delta Lake table base URI (required when using Delta Lake destination)
+        #[arg(long)]
+        delta_base_uri: Option<String>,
+        /// Delta Lake object store storage option in the form key=value. Repeat to set multiple options.
+        #[arg(long = "delta-storage-option", value_parser = parse_key_val::<String, String>)]
+        delta_storage_options: Vec<(String, String)>,
     },
     /// Prepare the benchmark environment by cleaning up replication slots
     Prepare {
@@ -134,6 +146,21 @@ enum Commands {
         #[arg(long, default_value = "false")]
         tls_enabled: bool,
     },
+}
+
+fn parse_key_val<T, U>(s: &str) -> Result<(T, U), String>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+    U: FromStr,
+    U::Err: std::fmt::Display,
+{
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("expected key=value but missing '=' in '{s}'"))?;
+    let key = T::from_str(&s[..pos]).map_err(|e| e.to_string())?;
+    let value = U::from_str(&s[pos + 1..]).map_err(|e| e.to_string())?;
+    Ok((key, value))
 }
 
 #[tokio::main]
@@ -170,6 +197,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             bq_sa_key_file,
             bq_max_staleness_mins,
             bq_max_concurrent_streams,
+            delta_base_uri,
+            delta_storage_options,
         } => {
             start_pipeline(RunArgs {
                 host,
@@ -190,6 +219,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 bq_sa_key_file,
                 bq_max_staleness_mins,
                 bq_max_concurrent_streams,
+                delta_base_uri,
+                delta_storage_options,
             })
             .await
         }
@@ -234,6 +265,8 @@ struct RunArgs {
     bq_sa_key_file: Option<String>,
     bq_max_staleness_mins: Option<u16>,
     bq_max_concurrent_streams: usize,
+    delta_base_uri: Option<String>,
+    delta_storage_options: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -300,23 +333,43 @@ async fn prepare_benchmark(args: PrepareArgs) -> Result<(), Box<dyn Error>> {
 }
 
 async fn start_pipeline(args: RunArgs) -> Result<(), Box<dyn Error>> {
+    let RunArgs {
+        host,
+        port,
+        database,
+        username,
+        password,
+        tls_enabled,
+        tls_certs,
+        publication_name,
+        batch_max_size,
+        batch_max_fill_ms,
+        max_table_sync_workers,
+        table_ids,
+        destination,
+        bq_project_id,
+        bq_dataset_id,
+        bq_sa_key_file,
+        bq_max_staleness_mins,
+        bq_max_concurrent_streams,
+        delta_base_uri,
+        delta_storage_options,
+    } = args;
+
     info!("Starting ETL pipeline benchmark");
-    info!(
-        "Database: {}@{}:{}/{}",
-        args.username, args.host, args.port, args.database
-    );
-    info!("Table IDs: {:?}", args.table_ids);
-    info!("Destination: {:?}", args.destination);
+    info!("Database: {}@{}:{}/{}", username, host, port, database);
+    info!("Table IDs: {:?}", table_ids);
+    info!("Destination: {:?}", destination);
 
     let pg_connection_config = PgConnectionConfig {
-        host: args.host,
-        port: args.port,
-        name: args.database,
-        username: args.username,
-        password: args.password.map(|p| p.into()),
+        host,
+        port,
+        name: database,
+        username: username.clone(),
+        password: password.map(|p| p.into()),
         tls: TlsConfig {
-            trusted_root_certs: args.tls_certs,
-            enabled: args.tls_enabled,
+            trusted_root_certs: tls_certs,
+            enabled: tls_enabled,
         },
     };
 
@@ -324,31 +377,29 @@ async fn start_pipeline(args: RunArgs) -> Result<(), Box<dyn Error>> {
 
     let pipeline_config = PipelineConfig {
         id: 1,
-        publication_name: args.publication_name,
+        publication_name,
         pg_connection: pg_connection_config,
         batch: BatchConfig {
-            max_size: args.batch_max_size,
-            max_fill_ms: args.batch_max_fill_ms,
+            max_size: batch_max_size,
+            max_fill_ms: batch_max_fill_ms,
         },
         table_error_retry_delay_ms: 10000,
         table_error_retry_max_attempts: 5,
-        max_table_sync_workers: args.max_table_sync_workers,
+        max_table_sync_workers,
     };
 
     // Create the appropriate destination based on the argument
-    let destination = match args.destination {
+    let destination = match destination {
         DestinationType::Null => BenchDestination::Null(NullDestination),
 
         DestinationType::BigQuery => {
             install_crypto_provider_for_bigquery();
 
-            let project_id = args
-                .bq_project_id
+            let project_id = bq_project_id
                 .ok_or("BigQuery project ID is required when using BigQuery destination")?;
-            let dataset_id = args
-                .bq_dataset_id
+            let dataset_id = bq_dataset_id
                 .ok_or("BigQuery dataset ID is required when using BigQuery destination")?;
-            let sa_key_file = args.bq_sa_key_file.ok_or(
+            let sa_key_file = bq_sa_key_file.ok_or(
                 "BigQuery service account key file is required when using BigQuery destination",
             )?;
 
@@ -356,18 +407,36 @@ async fn start_pipeline(args: RunArgs) -> Result<(), Box<dyn Error>> {
                 project_id,
                 dataset_id,
                 &sa_key_file,
-                args.bq_max_staleness_mins,
-                args.bq_max_concurrent_streams,
+                bq_max_staleness_mins,
+                bq_max_concurrent_streams,
                 store.clone(),
             )
             .await?;
 
             BenchDestination::BigQuery(bigquery_dest)
         }
+        DestinationType::DeltaLake => {
+            let base_uri = delta_base_uri
+                .ok_or("Delta Lake base URI is required when using Delta Lake destination")?;
+            let storage_options = if delta_storage_options.is_empty() {
+                None
+            } else {
+                Some(delta_storage_options.into_iter().collect::<HashMap<_, _>>())
+            };
+
+            let config = DeltaDestinationConfig {
+                base_uri,
+                storage_options,
+                table_config: HashMap::new(),
+            };
+
+            let delta_destination = DeltaLakeDestination::new(store.clone(), config);
+            BenchDestination::DeltaLake(delta_destination)
+        }
     };
 
     let mut table_copied_notifications = vec![];
-    for table_id in &args.table_ids {
+    for table_id in &table_ids {
         let table_copied = store
             .notify_on_table_state_type(
                 TableId::new(*table_id),
@@ -383,7 +452,7 @@ async fn start_pipeline(args: RunArgs) -> Result<(), Box<dyn Error>> {
 
     info!(
         "Waiting for all {} tables to complete copy phase...",
-        args.table_ids.len()
+        table_ids.len()
     );
     for notification in table_copied_notifications {
         notification.notified().await;
@@ -405,6 +474,7 @@ struct NullDestination;
 enum BenchDestination {
     Null(NullDestination),
     BigQuery(BigQueryDestination<NotifyingStore>),
+    DeltaLake(DeltaLakeDestination<NotifyingStore>),
 }
 
 impl Destination for BenchDestination {
@@ -416,6 +486,7 @@ impl Destination for BenchDestination {
         match self {
             BenchDestination::Null(dest) => dest.truncate_table(table_id).await,
             BenchDestination::BigQuery(dest) => dest.truncate_table(table_id).await,
+            BenchDestination::DeltaLake(dest) => dest.truncate_table(table_id).await,
         }
     }
 
@@ -427,6 +498,7 @@ impl Destination for BenchDestination {
         match self {
             BenchDestination::Null(dest) => dest.write_table_rows(table_id, table_rows).await,
             BenchDestination::BigQuery(dest) => dest.write_table_rows(table_id, table_rows).await,
+            BenchDestination::DeltaLake(dest) => dest.write_table_rows(table_id, table_rows).await,
         }
     }
 
@@ -434,6 +506,7 @@ impl Destination for BenchDestination {
         match self {
             BenchDestination::Null(dest) => dest.write_events(events).await,
             BenchDestination::BigQuery(dest) => dest.write_events(events).await,
+            BenchDestination::DeltaLake(dest) => dest.write_events(events).await,
         }
     }
 }

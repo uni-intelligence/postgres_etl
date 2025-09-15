@@ -20,7 +20,9 @@ set -euo pipefail
 #   RUN_LABEL                  Run name label for trace. Default: auto timestamped
 #   TRACE_DIR                  Output directory for traces. Default: target/instruments
 #   LOG_TARGET                 Benchmark logs target (terminal|file). Default: terminal
-#   DESTINATION                Destination (null|big-query). Default: null
+#   DESTINATION                Destination (null|big-query|delta-lake). Default: null
+#   DELTA_BASE_URI             Required when DESTINATION=delta-lake (e.g., s3://bucket/path)
+#   DELTA_STORAGE_OPTIONS      Optional comma-separated key=value list for object store config
 #
 #   Database connection (same defaults as benchmark.sh / prepare_tpcc.sh):
 #     POSTGRES_USER            Default: postgres
@@ -105,10 +107,14 @@ BATCH_MAX_FILL_MS="${BATCH_MAX_FILL_MS:=10000}"
 MAX_TABLE_SYNC_WORKERS="${MAX_TABLE_SYNC_WORKERS:=8}"
 LOG_TARGET="${LOG_TARGET:=terminal}"
 DESTINATION="${DESTINATION:=null}"
+DELTA_BASE_URI="${DELTA_BASE_URI:=}"
+DELTA_STORAGE_OPTIONS="${DELTA_STORAGE_OPTIONS:=}"
+
+IFS=',' read -r -a DELTA_STORAGE_OPTIONS_ARRAY <<< "${DELTA_STORAGE_OPTIONS}"
 
 # Validate destination
-if [[ "${DESTINATION}" != "null" && "${DESTINATION}" != "big-query" ]]; then
-  echo "❌ Invalid DESTINATION='${DESTINATION}'. Supported: null, big-query" >&2
+if [[ "${DESTINATION}" != "null" && "${DESTINATION}" != "big-query" && "${DESTINATION}" != "delta-lake" ]]; then
+  echo "❌ Invalid DESTINATION='${DESTINATION}'. Supported: null, big-query, delta-lake" >&2
   exit 1
 fi
 if [[ "${LOG_TARGET}" != "terminal" && "${LOG_TARGET}" != "file" ]]; then
@@ -124,6 +130,18 @@ if [[ "${DESTINATION}" == "big-query" ]]; then
     echo "❌ BigQuery SA key file not found: ${BQ_SA_KEY_FILE}" >&2
     exit 1
   fi
+elif [[ "${DESTINATION}" == "delta-lake" ]]; then
+  if [[ -z "${DELTA_BASE_URI}" ]]; then
+    echo "❌ DELTA_BASE_URI is required for DESTINATION=delta-lake" >&2
+    exit 1
+  fi
+  for opt in "${DELTA_STORAGE_OPTIONS_ARRAY[@]}"; do
+    [[ -z "${opt}" ]] && continue
+    if [[ "${opt}" != *=* ]]; then
+      echo "❌ Invalid DELTA_STORAGE_OPTIONS entry '${opt}'. Expected key=value." >&2
+      exit 1
+    fi
+  done
 fi
 
 echo "🧪 Memory profiling with cargo-instruments"
@@ -134,6 +152,12 @@ echo "   Label:    ${RUN_LABEL}"
 echo "   Trace dir:${TRACE_DIR}"
 echo "   Open UI:  ${OPEN_TRACE}"
 echo "   Dest:     ${DESTINATION}"
+if [[ "${DESTINATION}" == "delta-lake" ]]; then
+  echo "   Delta URI:${DELTA_BASE_URI}"
+  if [[ -n "${DELTA_STORAGE_OPTIONS}" ]]; then
+    echo "   Delta Opts:${DELTA_STORAGE_OPTIONS}"
+  fi
+fi
 
 # Build common bench arg tail
 build_bench_args() {
@@ -167,6 +191,12 @@ build_bench_args() {
   args+=("--destination" "${DESTINATION}")
   if [[ "${DESTINATION}" == "big-query" ]]; then
     args+=("--bq-project-id" "${BQ_PROJECT_ID}" "--bq-dataset-id" "${BQ_DATASET_ID}" "--bq-sa-key-file" "${BQ_SA_KEY_FILE}")
+  elif [[ "${DESTINATION}" == "delta-lake" ]]; then
+    args+=("--delta-base-uri" "${DELTA_BASE_URI}")
+    for opt in "${DELTA_STORAGE_OPTIONS_ARRAY[@]}"; do
+      [[ -z "${opt}" ]] && continue
+      args+=("--delta-storage-option" "${opt}")
+    done
   fi
   printf '%q ' "${args[@]}"
 }
