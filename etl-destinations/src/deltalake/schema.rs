@@ -685,7 +685,6 @@ impl TableRowEncoder {
             .map(|cell| match cell {
                 PGCell::Null => None,
                 PGCell::Array(array_cell) => match array_cell {
-                    PGArrayCell::Null => None,
                     PGArrayCell::Bool(arr) => Some(format!("{arr:?}")),
                     PGArrayCell::String(arr) => Some(format!("{arr:?}")),
                     PGArrayCell::I16(arr) => Some(format!("{arr:?}")),
