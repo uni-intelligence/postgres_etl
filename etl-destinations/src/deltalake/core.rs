@@ -76,7 +76,7 @@ where
                 )
             })?;
 
-        let table_name = table_schema.name.name.clone();
+        let table_name = &table_schema.name.name;
         let table_path = format!("{}/{}", self.config.base_uri, table_name);
 
         let mut table_builder = DeltaTableBuilder::from_uri(table_path);
@@ -107,7 +107,7 @@ where
             )
         })?;
 
-        let config = self.config_for_table_name(&table_name);
+        let config = self.config_for_table_name(table_name);
 
         let mut builder = ops
             .create()
@@ -237,29 +237,28 @@ where
 
         let combined_predicate = delete_predicates.into_iter().reduce(|acc, e| acc.or(e));
 
-        // TODO(abhi): We can avoid the clone by being smarter since the predicate is only used once
-        if let Some(combined_predicate) = combined_predicate.clone()
-            && upsert_rows.is_empty()
-        {
-            trace!(
-                "Deleting {} rows from table {}",
-                upsert_rows.len(),
-                table_id,
-            );
+        if upsert_rows.is_empty() {
+            if let Some(combined_predicate) = combined_predicate {
+                trace!(
+                    "Deleting {} rows from table {}",
+                    upsert_rows.len(),
+                    table_id,
+                );
 
-            let config = self.config_for_table_name(&table_schema.name.name);
-            let mut table = table.lock().await;
-            delete_from_table(&mut table, config.as_ref(), combined_predicate)
-                .await
-                .map_err(|e| {
-                    etl_error!(
-                        ErrorKind::DestinationError,
-                        "Failed to delete rows from Delta table",
-                        format!("Error deleting from table for table_id {}: {}", table_id, e)
-                    )
-                })?;
+                let config = self.config_for_table_name(&table_schema.name.name);
+                let mut table = table.lock().await;
+                delete_from_table(&mut table, config.as_ref(), combined_predicate)
+                    .await
+                    .map_err(|e| {
+                        etl_error!(
+                            ErrorKind::DestinationError,
+                            "Failed to delete rows from Delta table",
+                            format!("Error deleting from table for table_id {}: {}", table_id, e)
+                        )
+                    })?;
+            }
             return Ok(());
-        } else if !upsert_rows.is_empty() {
+        } else {
             trace!(
                 "Appending {} upserted rows to table {}",
                 upsert_rows.len(),

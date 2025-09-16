@@ -19,7 +19,7 @@ pub async fn merge_to_table(
     let rows = TableRowEncoder::encode_table_rows(table_schema, upsert_rows)?;
 
     let ctx = SessionContext::new();
-    let batch = ctx.read_batch(rows.clone())?;
+    let batch = ctx.read_batch(rows)?;
 
     // TODO(abhi): We should proabbly be passing this information in
     let primary_keys = table_schema
@@ -41,10 +41,10 @@ pub async fn merge_to_table(
     );
 
     // TODO(abhi): Clean up this mess
-    let all_columns: Vec<String> = table_schema
+    let all_columns: Vec<&str> = table_schema
         .column_schemas
         .iter()
-        .map(|col| col.name.clone())
+        .map(|col| col.name.as_str())
         .collect();
 
     let mut merge_builder = merge_builder
@@ -52,13 +52,13 @@ pub async fn merge_to_table(
         .with_source_alias("source")
         .with_target_alias("target")
         .when_not_matched_insert(|insert| {
-            all_columns.iter().fold(insert, |insert, column| {
-                insert.set(column.clone(), col(format!("source.{}", column.clone())))
+            all_columns.iter().fold(insert, |insert, &column| {
+                insert.set(column.to_string(), col(format!("source.{column}")))
             })
         })?
         .when_matched_update(|update| {
-            all_columns.iter().fold(update, |update, column| {
-                update.update(column.clone(), col(format!("source.{}", column.clone())))
+            all_columns.iter().fold(update, |update, &column| {
+                update.update(column.to_string(), col(format!("source.{column}")))
             })
         })?;
 
