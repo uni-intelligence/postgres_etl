@@ -1,0 +1,14 @@
+# Builds an image that bundles go-tpc along with psql client tools for loading TPC-H data.
+FROM golang:1.22 AS builder
+
+ARG GO_TPC_VERSION=latest
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN go install github.com/pingcap/go-tpc/cmd/go-tpc@${GO_TPC_VERSION}
+
+ENV PATH="/go/bin:${PATH}"
+
+ENTRYPOINT ["/bin/sh", "-c"]

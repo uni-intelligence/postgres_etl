@@ -165,7 +165,7 @@ cd etl-benchmarks
 docker compose up postgres tpch-seeder
 ```
 
-The `tpch-seeder` service builds and runs the [`go-tpc`](https://github.com/pingcap/go-tpc) TPC-H loader against the Postgres container after it becomes healthy. Adjust credentials, port mapping, scale factor, or the go-tpc version by exporting `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`, `TPCH_SCALE_FACTOR`, or `GO_TPC_VERSION` before launching Compose.
+The `tpch-seeder` service builds a lightweight image (see `Dockerfile.tpch-seeder`) that bundles the [`go-tpc`](https://github.com/pingcap/go-tpc) binary and runs the TPC-H loader after Postgres becomes healthy. Adjust credentials, port mapping, scale factor, or the go-tpc version by exporting `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`, `TPCH_SCALE_FACTOR`, or `GO_TPC_VERSION` before launching Compose. Pass `--build` (or `--pull`) when changing `GO_TPC_VERSION` so Compose rebuilds the seeder image.
 
 To add an S3-compatible target for Delta Lake benchmarking, enable the optional `minio` profile:
 

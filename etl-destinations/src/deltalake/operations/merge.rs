@@ -48,7 +48,7 @@ pub async fn merge_to_table(
         .collect();
 
     let mut merge_builder = merge_builder
-        .with_writer_properties(config.clone().into())
+        .with_writer_properties(config.into())
         .with_source_alias("source")
         .with_target_alias("target")
         .when_not_matched_insert(|insert| {

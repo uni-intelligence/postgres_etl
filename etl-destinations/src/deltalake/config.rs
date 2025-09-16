@@ -28,6 +28,12 @@ pub struct DeltaTableConfig {
 
 impl From<DeltaTableConfig> for WriterProperties {
     fn from(value: DeltaTableConfig) -> Self {
+        WriterProperties::from(&value)
+    }
+}
+
+impl From<&DeltaTableConfig> for WriterProperties {
+    fn from(value: &DeltaTableConfig) -> Self {
         let mut builder = WriterProperties::builder();
         builder = builder.set_writer_version(value.parquet_version);
         builder = builder.set_compression(value.compression);

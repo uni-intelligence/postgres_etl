@@ -23,7 +23,11 @@ services:
       start_period: 10s
 
   tpch-seeder:
-    image: golang:1.22
+    build:
+      context: .
+      dockerfile: Dockerfile.tpch-seeder
+      args:
+        GO_TPC_VERSION: ${GO_TPC_VERSION:-latest}
     container_name: etl-benchmarks-tpch-seeder
     depends_on:
       postgres:
@@ -35,15 +39,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       TPCH_SCALE_FACTOR: ${TPCH_SCALE_FACTOR:-1}
-      GO_TPC_VERSION: ${GO_TPC_VERSION:-latest}
-    entrypoint: ["/bin/sh", "-c"]
     command: >-
       set -euo pipefail;
-      apt-get update >/dev/null;
-      apt-get install -y --no-install-recommends postgresql-client >/dev/null;
-      rm -rf /var/lib/apt/lists/*;
-      go install github.com/pingcap/go-tpc/cmd/go-tpc@${GO_TPC_VERSION};
-      export PATH="${PATH}:/go/bin";
       echo "Waiting for Postgres at ${POSTGRES_HOST}:${POSTGRES_PORT}...";
       until pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER}; do
         sleep 2;

@@ -15,6 +15,7 @@ use rand::random;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use etl::types::PgNumeric;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use deltalake::arrow::util::pretty::pretty_format_batches;
 use deltalake::{DeltaResult, DeltaTableError};
@@ -86,10 +87,10 @@ async fn append_only_ignores_updates_and_deletes() {
     let mut table_config = std::collections::HashMap::new();
     table_config.insert(
         database_schema.users_schema().name.name.clone(),
-        etl_destinations::deltalake::DeltaTableConfig {
+        Arc::new(etl_destinations::deltalake::DeltaTableConfig {
             append_only: true,
             ..Default::default()
-        },
+        }),
     );
 
     let raw_destination = delta_database

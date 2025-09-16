@@ -96,7 +96,7 @@ impl MinioDeltaLakeDatabase {
     pub async fn build_destination_with_config<S>(
         &self,
         store: S,
-        table_config: HashMap<String, DeltaTableConfig>,
+        table_config: HashMap<String, Arc<DeltaTableConfig>>,
     ) -> DeltaLakeDestination<S>
     where
         S: StateStore + SchemaStore + Send + Sync,

@@ -28,7 +28,7 @@ pub struct DeltaDestinationConfig {
     /// Optional storage options passed to underlying object store
     pub storage_options: Option<HashMap<String, String>>,
     /// Table configuration (per table)
-    pub table_config: HashMap<String, DeltaTableConfig>,
+    pub table_config: HashMap<String, Arc<DeltaTableConfig>>,
 }
 
 /// Delta Lake destination implementation
@@ -54,12 +54,12 @@ where
         }
     }
 
-    fn config_for_table_name(&self, table_name: &str) -> DeltaTableConfig {
+    fn config_for_table_name(&self, table_name: &str) -> Arc<DeltaTableConfig> {
         self.config
             .table_config
             .get(table_name)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(|| Arc::new(DeltaTableConfig::default()))
     }
 
     /// Gets or creates a Delta table for a given table id if it doesn't exist.
@@ -249,7 +249,7 @@ where
 
             let config = self.config_for_table_name(&table_schema.name.name);
             let mut table = table.lock().await;
-            delete_from_table(&mut table, &config, combined_predicate)
+            delete_from_table(&mut table, config.as_ref(), combined_predicate)
                 .await
                 .map_err(|e| {
                     etl_error!(
@@ -271,7 +271,7 @@ where
 
             merge_to_table(
                 &mut table,
-                &config,
+                config.as_ref(),
                 table_schema,
                 upsert_rows,
                 combined_predicate,
@@ -345,7 +345,7 @@ where
 
         let config = self.config_for_table_name(&table_schema.name.name);
         let mut table = table.lock().await;
-        append_to_table(&mut table, &config, record_batch)
+        append_to_table(&mut table, config.as_ref(), record_batch)
             .await
             .map_err(|e| {
                 etl_error!(
