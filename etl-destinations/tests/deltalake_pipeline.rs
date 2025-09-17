@@ -8,7 +8,7 @@ use etl::test_utils::notify::NotifyingStore;
 use etl::test_utils::pipeline::{create_pipeline, create_pipeline_with};
 use etl::test_utils::test_destination_wrapper::TestDestinationWrapper;
 use etl::test_utils::test_schema::{TableSelection, insert_mock_data, setup_test_database_schema};
-use etl::types::{EventType, PipelineId, TableName};
+use etl::types::{EventType, PipelineId};
 use etl_telemetry::tracing::init_test_tracing;
 use rand::random;
 
@@ -18,18 +18,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use deltalake::arrow::util::pretty::pretty_format_batches;
-use deltalake::{DeltaResult, DeltaTableError};
+use deltalake::{DeltaResult, DeltaTable, DeltaTableError};
 use insta::assert_snapshot;
 
-use crate::support::deltalake::{MinioDeltaLakeDatabase, setup_delta_connection};
+use crate::support::deltalake::setup_delta_connection;
 
 mod support;
 
-pub async fn snapshot_table_string(
-    database: &MinioDeltaLakeDatabase,
-    table_name: &TableName,
-) -> DeltaResult<String> {
-    let table = database.load_table(table_name).await?;
+pub async fn snapshot_table_string(table_name: &str, table: DeltaTable) -> DeltaResult<String> {
     let snapshot = table.snapshot()?;
     let schema = snapshot.schema();
 
@@ -46,9 +42,9 @@ pub async fn snapshot_table_string(
 
     out.push_str("\n# Data\n");
     let ctx = SessionContext::new();
-    ctx.register_table("snapshot_table", table)?;
+    ctx.register_table(table_name, Arc::new(table))?;
     let batches = ctx
-        .sql("SELECT * FROM snapshot_table ORDER BY id")
+        .sql(&format!("SELECT * FROM {table_name} ORDER BY id"))
         .await?
         .collect()
         .await?;
@@ -64,11 +60,11 @@ pub async fn snapshot_table_string(
 }
 
 macro_rules! assert_table_snapshot {
-    ($name:expr, $database:expr, $table_name:expr) => {
-        let snapshot_str = snapshot_table_string($database, $table_name)
+    ($name:expr, $table:expr) => {
+        let snapshot_str = snapshot_table_string($name, $table)
             .await
             .expect("Should snapshot table");
-        assert_snapshot!($name, snapshot_str, stringify!($table_name));
+        assert_snapshot!($name, snapshot_str, stringify!($table));
     };
 }
 
@@ -167,12 +163,11 @@ async fn append_only_ignores_updates_and_deletes() {
     event_notify.notified().await;
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let users_table = &database_schema.users_schema().name;
-    assert_table_snapshot!(
-        "append_only_ignores_updates_and_deletes",
-        &delta_database,
-        users_table
-    );
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+    assert_table_snapshot!("append_only_ignores_updates_and_deletes", users_table);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -244,8 +239,11 @@ async fn upsert_merge_validation() {
     event_notify.notified().await;
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let users_table = &database_schema.users_schema().name;
-    assert_table_snapshot!("upsert_merge_validation", &delta_database, users_table);
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+    assert_table_snapshot!("upsert_merge_validation", users_table);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -317,8 +315,11 @@ async fn merge_with_delete_validation() {
     event_notify.notified().await;
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let users_table = &database_schema.users_schema().name;
-    assert_table_snapshot!("merge_with_delete_validation", &delta_database, users_table);
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+    assert_table_snapshot!("merge_with_delete_validation", users_table);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -375,18 +376,22 @@ async fn table_copy_and_streaming_with_restart() {
 
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let users_table = &database_schema.users_schema().name;
-    let orders_table = &database_schema.orders_schema().name;
+    let mut users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+    let mut orders_table = delta_database
+        .load_table(&database_schema.orders_schema().name)
+        .await
+        .unwrap();
 
     assert_table_snapshot!(
         "table_copy_and_streaming_with_restart_users_table_1",
-        &delta_database,
-        users_table
+        users_table.clone()
     );
     assert_table_snapshot!(
         "table_copy_and_streaming_with_restart_orders_table_1",
-        &delta_database,
-        orders_table
+        orders_table.clone()
     );
 
     // We restart the pipeline and check that we can process events since we have loaded the table
@@ -420,14 +425,15 @@ async fn table_copy_and_streaming_with_restart() {
 
     pipeline.shutdown_and_wait().await.unwrap();
 
+    users_table.load().await.unwrap();
+    orders_table.load().await.unwrap();
+
     assert_table_snapshot!(
         "table_copy_and_streaming_with_restart_users_table_2",
-        &delta_database,
         users_table
     );
     assert_table_snapshot!(
         "table_copy_and_streaming_with_restart_orders_table_2",
-        &delta_database,
         orders_table
     );
 }
@@ -467,8 +473,6 @@ async fn table_insert_update_delete() {
 
     users_state_notify.notified().await;
 
-    let users_table = &database_schema.users_schema().name;
-
     // Wait for the first insert.
     let event_notify = destination
         .wait_for_events_count(vec![(EventType::Insert, 1)])
@@ -486,11 +490,12 @@ async fn table_insert_update_delete() {
 
     event_notify.notified().await;
 
-    assert_table_snapshot!(
-        "table_insert_update_delete_1_insert",
-        &delta_database,
-        users_table
-    );
+    let mut users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+
+    assert_table_snapshot!("table_insert_update_delete_1_insert", users_table.clone());
 
     let event_notify = destination
         .wait_for_events_count(vec![(EventType::Update, 1)])
@@ -508,11 +513,9 @@ async fn table_insert_update_delete() {
 
     event_notify.notified().await;
 
-    assert_table_snapshot!(
-        "table_insert_update_delete_2_update",
-        &delta_database,
-        users_table
-    );
+    users_table.load().await.unwrap();
+
+    assert_table_snapshot!("table_insert_update_delete_2_update", users_table.clone());
 
     // Wait for the delete.
     let event_notify = destination
@@ -534,11 +537,9 @@ async fn table_insert_update_delete() {
 
     pipeline.shutdown_and_wait().await.unwrap();
 
-    assert_table_snapshot!(
-        "table_insert_update_delete_3_delete",
-        &delta_database,
-        users_table
-    );
+    users_table.load().await.unwrap();
+
+    assert_table_snapshot!("table_insert_update_delete_3_delete", users_table);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -619,13 +620,12 @@ async fn table_subsequent_updates() {
 
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let users_table = &database_schema.users_schema().name;
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
 
-    assert_table_snapshot!(
-        "table_subsequent_updates_insert",
-        &delta_database,
-        users_table
-    );
+    assert_table_snapshot!("table_subsequent_updates_insert", users_table.clone());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -656,9 +656,6 @@ async fn table_truncate_with_batching() {
             max_fill_ms: 1000,
         }),
     );
-
-    let users_table = &database_schema.users_schema().name;
-    let orders_table = &database_schema.orders_schema().name;
 
     // Register notifications for table copy completion.
     let users_state_notify = store
@@ -718,16 +715,17 @@ async fn table_truncate_with_batching() {
 
     pipeline.shutdown_and_wait().await.unwrap();
 
-    assert_table_snapshot!(
-        "table_truncate_with_batching_users_table",
-        &delta_database,
-        users_table
-    );
-    assert_table_snapshot!(
-        "table_truncate_with_batching_orders_table",
-        &delta_database,
-        orders_table
-    );
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+    let orders_table = delta_database
+        .load_table(&database_schema.orders_schema().name)
+        .await
+        .unwrap();
+
+    assert_table_snapshot!("table_truncate_with_batching_users_table", users_table);
+    assert_table_snapshot!("table_truncate_with_batching_orders_table", orders_table);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -814,12 +812,8 @@ async fn decimal_precision_scale_mapping() {
     event_notify.notified().await;
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let table_name_ref = &table_name;
-    assert_table_snapshot!(
-        "decimal_precision_scale_mapping",
-        &delta_database,
-        table_name_ref
-    );
+    let table = delta_database.load_table(&table_name).await.unwrap();
+    assert_table_snapshot!("decimal_precision_scale_mapping", table);
 }
 
 /// Test comprehensive data type mapping from Postgres to Delta Lake
@@ -926,8 +920,8 @@ async fn data_type_mapping() {
     event_notify.notified().await;
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let table_name_ref = &table_name;
-    assert_table_snapshot!("data_type_mapping", &delta_database, table_name_ref);
+    let table = delta_database.load_table(&table_name).await.unwrap();
+    assert_table_snapshot!("data_type_mapping", table);
 }
 
 /// Test CDC deduplication and conflict resolution
@@ -962,8 +956,6 @@ async fn test_cdc_deduplication_and_conflict_resolution() {
 
     pipeline.start().await.unwrap();
     users_state_notify.notified().await;
-
-    let users_table = &database_schema.users_schema().name;
 
     // Test scenario: Insert, multiple updates, and final delete for the same row
     // This tests the last-wins deduplication logic
@@ -1027,9 +1019,13 @@ async fn test_cdc_deduplication_and_conflict_resolution() {
     event_notify.notified().await;
     pipeline.shutdown_and_wait().await.unwrap();
 
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+
     assert_table_snapshot!(
         "test_cdc_deduplication_and_conflict_resolution",
-        &delta_database,
         users_table
     );
 }
@@ -1049,6 +1045,7 @@ async fn test_large_transaction_batching() {
     let destination = TestDestinationWrapper::wrap(raw_destination);
 
     let pipeline_id: PipelineId = random();
+    let batch_size = 5;
     let mut pipeline = create_pipeline_with(
         &database.config,
         pipeline_id,
@@ -1056,7 +1053,7 @@ async fn test_large_transaction_batching() {
         store.clone(),
         destination.clone(),
         Some(BatchConfig {
-            max_size: 5, // Small batch size to force multiple batches
+            max_size: batch_size, // Small batch size to force multiple batches
             max_fill_ms: 1000,
         }),
     );
@@ -1072,9 +1069,9 @@ async fn test_large_transaction_batching() {
     users_state_notify.notified().await;
 
     // Insert many rows in a single transaction to test batching
-    let insert_count = 20;
+    let insert_count: usize = 20;
     let event_notify = destination
-        .wait_for_events_count(vec![(EventType::Insert, insert_count)])
+        .wait_for_events_count(vec![(EventType::Insert, insert_count as u64)])
         .await;
 
     let transaction = database.begin_transaction().await;
@@ -1093,10 +1090,12 @@ async fn test_large_transaction_batching() {
     event_notify.notified().await;
     pipeline.shutdown_and_wait().await.unwrap();
 
-    let users_table = &database_schema.users_schema().name;
-    assert_table_snapshot!(
-        "test_large_transaction_batching",
-        &delta_database,
-        users_table
-    );
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+    assert_table_snapshot!("test_large_transaction_batching", users_table.clone());
+    let commits = users_table.history(None).await.unwrap();
+    // Due to the batch timeout, in practice, there will be more commits than the batch size.
+    assert!(commits.len() >= (insert_count / batch_size));
 }

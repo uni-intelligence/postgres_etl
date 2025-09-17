@@ -127,7 +127,7 @@ impl MinioDeltaLakeDatabase {
         format!("{}/{}", self.s3_base_uri, table_name.name)
     }
 
-    pub async fn load_table(&self, table_name: &TableName) -> DeltaResult<Arc<DeltaTable>> {
+    pub async fn load_table(&self, table_name: &TableName) -> DeltaResult<DeltaTable> {
         let mut storage_options = HashMap::new();
         storage_options.insert("endpoint".to_string(), self.endpoint.clone());
         storage_options.insert("access_key_id".to_string(), self.access_key.clone());
@@ -141,7 +141,7 @@ impl MinioDeltaLakeDatabase {
         let table =
             open_table_with_storage_options(&self.get_table_uri(table_name), storage_options)
                 .await?;
-        Ok(Arc::new(table))
+        Ok(table)
     }
 
     /// Returns the warehouse path for this database instance.
