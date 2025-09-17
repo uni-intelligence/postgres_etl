@@ -10,14 +10,18 @@ use etl::types::{Event, TableId, TableRow as PgTableRow, TableSchema as PgTableS
 use etl::{bail, etl_error};
 use futures::future::try_join_all;
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, trace};
+use tokio::task::JoinHandle;
+use tracing::{error, info, trace};
 
 use crate::deltalake::TableRowEncoder;
 use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::events::{materialize_events, materialize_events_append_only};
-use crate::deltalake::operations::{append_to_table, delete_from_table, merge_to_table};
+use crate::deltalake::operations::{
+    append_to_table, compact_table, delete_from_table, merge_to_table, zorder_table,
+};
 use crate::deltalake::schema::postgres_to_delta_schema;
 
 /// Configuration for Delta Lake destination
@@ -31,6 +35,35 @@ pub struct DeltaDestinationConfig {
     pub table_config: HashMap<String, Arc<DeltaTableConfig>>,
 }
 
+/// Tracks background maintenance progress for a Delta table.
+#[derive(Debug)]
+struct TableMaintenanceState {
+    inner: Mutex<TableMaintenanceInner>,
+}
+
+/// Stores the latest versions processed by maintenance tasks.
+#[derive(Debug)]
+struct TableMaintenanceInner {
+    last_compacted_version: i64,
+    last_zordered_version: i64,
+    compaction_task: Option<JoinHandle<()>>,
+    zorder_task: Option<JoinHandle<()>>,
+}
+
+impl TableMaintenanceState {
+    /// Creates a new maintenance state seeded with the provided table version.
+    fn new(initial_version: i64) -> Self {
+        Self {
+            inner: Mutex::new(TableMaintenanceInner {
+                last_compacted_version: initial_version,
+                last_zordered_version: initial_version,
+                compaction_task: None,
+                zorder_task: None,
+            }),
+        }
+    }
+}
+
 /// Delta Lake destination implementation
 #[derive(Clone)]
 pub struct DeltaLakeDestination<S> {
@@ -39,6 +72,8 @@ pub struct DeltaLakeDestination<S> {
     /// Cache of opened Delta tables, keyed by postgres table id
     // This isn't using a RWLock because we are overwhelmingly write-heavy
     table_cache: DashMap<TableId, Arc<Mutex<DeltaTable>>>,
+    /// Tracks in-flight maintenance tasks and the versions they cover.
+    maintenance: DashMap<TableId, Arc<TableMaintenanceState>>,
 }
 
 impl<S> DeltaLakeDestination<S>
@@ -51,6 +86,7 @@ where
             store,
             config,
             table_cache: DashMap::new(),
+            maintenance: DashMap::new(),
         }
     }
 
@@ -60,6 +96,35 @@ where
             .get(table_name)
             .cloned()
             .unwrap_or_else(|| Arc::new(DeltaTableConfig::default()))
+    }
+
+    fn maintenance_state_for(
+        &self,
+        table_id: TableId,
+        current_version: i64,
+    ) -> Arc<TableMaintenanceState> {
+        match self.maintenance.entry(table_id) {
+            Occupied(entry) => Arc::clone(entry.get()),
+            Vacant(entry) => {
+                let state = Arc::new(TableMaintenanceState::new(current_version));
+                entry.insert(state.clone());
+                state
+            }
+        }
+    }
+
+    /// Returns a cached table handle or loads it if missing.
+    async fn table_handle(&self, table_id: &TableId) -> EtlResult<Arc<Mutex<DeltaTable>>> {
+        let handle = match self.table_cache.entry(*table_id) {
+            Occupied(entry) => entry.into_ref(),
+            Vacant(entry) => {
+                let table = self.get_or_create_table(table_id).await?;
+                entry.insert(Arc::new(Mutex::new(table)))
+            }
+        }
+        .downgrade();
+
+        Ok(Arc::clone(handle.value()))
     }
 
     /// Gets or creates a Delta table for a given table id if it doesn't exist.
@@ -226,28 +291,21 @@ where
         upsert_rows: Vec<&PgTableRow>,
         delete_predicates: Vec<Expr>,
     ) -> EtlResult<()> {
-        let table = match self.table_cache.entry(table_id) {
-            Occupied(entry) => entry.into_ref(),
-            Vacant(entry) => {
-                let table = self.get_or_create_table(&table_id).await?;
-                entry.insert(Arc::new(Mutex::new(table)))
-            }
-        }
-        .downgrade();
-
         let combined_predicate = delete_predicates.into_iter().reduce(|acc, e| acc.or(e));
+
+        if upsert_rows.is_empty() && combined_predicate.is_none() {
+            return Ok(());
+        }
+
+        let config = self.config_for_table_name(&table_schema.name.name);
+        let table = self.table_handle(&table_id).await?;
 
         if upsert_rows.is_empty() {
             if let Some(combined_predicate) = combined_predicate {
-                trace!(
-                    "Deleting {} rows from table {}",
-                    upsert_rows.len(),
-                    table_id,
-                );
+                trace!("Deleting rows from table {}", table_id);
 
-                let config = self.config_for_table_name(&table_schema.name.name);
-                let mut table = table.lock().await;
-                delete_from_table(&mut table, config.as_ref(), combined_predicate)
+                let mut table_guard = table.lock().await;
+                delete_from_table(&mut table_guard, config.as_ref(), combined_predicate)
                     .await
                     .map_err(|e| {
                         etl_error!(
@@ -256,37 +314,48 @@ where
                             format!("Error deleting from table for table_id {}: {}", table_id, e)
                         )
                     })?;
+
+                let version = table_guard.version().unwrap_or_default();
+                drop(table_guard);
+
+                self.maybe_schedule_maintenance(table_id, table, version, config)
+                    .await?;
             }
             return Ok(());
-        } else {
-            trace!(
-                "Appending {} upserted rows to table {}",
-                upsert_rows.len(),
-                table_id,
-            );
-
-            let config = self.config_for_table_name(&table_schema.name.name);
-            let mut table = table.lock().await;
-
-            merge_to_table(
-                &mut table,
-                config.as_ref(),
-                table_schema,
-                upsert_rows,
-                combined_predicate,
-            )
-            .await
-            .map_err(|e| {
-                etl_error!(
-                    ErrorKind::DestinationError,
-                    "Failed to append rows to Delta table",
-                    format!(
-                        "Error appending to table for table_id {}: {}",
-                        table_id.0, e
-                    )
-                )
-            })?;
         }
+
+        trace!(
+            "Appending {} upserted rows to table {}",
+            upsert_rows.len(),
+            table_id,
+        );
+
+        let mut table_guard = table.lock().await;
+
+        merge_to_table(
+            &mut table_guard,
+            config.as_ref(),
+            table_schema,
+            upsert_rows,
+            combined_predicate,
+        )
+        .await
+        .map_err(|e| {
+            etl_error!(
+                ErrorKind::DestinationError,
+                "Failed to append rows to Delta table",
+                format!(
+                    "Error appending to table for table_id {}: {}",
+                    table_id.0, e
+                )
+            )
+        })?;
+
+        let version = table_guard.version().unwrap_or_default();
+        drop(table_guard);
+
+        self.maybe_schedule_maintenance(table_id, table, version, config)
+            .await?;
 
         Ok(())
     }
@@ -309,14 +378,7 @@ where
             return Ok(());
         }
 
-        let table = match self.table_cache.entry(*table_id) {
-            Occupied(entry) => entry.into_ref(),
-            Vacant(entry) => {
-                let table = self.get_or_create_table(table_id).await?;
-                entry.insert(Arc::new(Mutex::new(table)))
-            }
-        }
-        .downgrade();
+        let table = self.table_handle(table_id).await?;
 
         let table_schema = self
             .store
@@ -343,8 +405,8 @@ where
             })?;
 
         let config = self.config_for_table_name(&table_schema.name.name);
-        let mut table = table.lock().await;
-        append_to_table(&mut table, config.as_ref(), record_batch)
+        let mut table_guard = table.lock().await;
+        append_to_table(&mut table_guard, config.as_ref(), record_batch)
             .await
             .map_err(|e| {
                 etl_error!(
@@ -359,7 +421,201 @@ where
             row_length, table_id.0
         );
 
+        let version = table_guard.version().unwrap_or_default();
+        drop(table_guard);
+
+        self.maybe_schedule_maintenance(*table_id, table, version, config)
+            .await?;
+
         Ok(())
+    }
+
+    /// Schedules compaction or Z-ordering tasks if thresholds are met.
+    async fn maybe_schedule_maintenance(
+        &self,
+        table_id: TableId,
+        table: Arc<Mutex<DeltaTable>>,
+        table_version: i64,
+        config: Arc<DeltaTableConfig>,
+    ) -> EtlResult<()> {
+        if table_version < 0 {
+            return Ok(());
+        }
+
+        if config.compact_after_commits.is_none() && config.z_order_after_commits.is_none() {
+            return Ok(());
+        }
+
+        let maintenance_state = self.maintenance_state_for(table_id, table_version);
+
+        let mut schedule_compact = false;
+        let mut schedule_zorder: Option<Vec<String>> = None;
+
+        {
+            let mut state = maintenance_state.inner.lock().await;
+
+            if let Some(handle) = state.compaction_task.as_ref() {
+                if handle.is_finished() {
+                    state.compaction_task.take();
+                }
+            }
+
+            if let Some(handle) = state.zorder_task.as_ref() {
+                if handle.is_finished() {
+                    state.zorder_task.take();
+                }
+            }
+
+            if let Some(compact_after) = config.compact_after_commits {
+                if let Ok(threshold) = i64::try_from(compact_after.get()) {
+                    if table_version.saturating_sub(state.last_compacted_version) >= threshold
+                        && state.compaction_task.is_none()
+                    {
+                        schedule_compact = true;
+                    }
+                }
+            }
+
+            if let (Some(columns), Some(zorder_after)) = (
+                config.z_order_columns.as_ref(),
+                config.z_order_after_commits,
+            ) {
+                if !columns.is_empty() {
+                    if let Ok(threshold) = i64::try_from(zorder_after.get()) {
+                        if table_version.saturating_sub(state.last_zordered_version) >= threshold
+                            && state.zorder_task.is_none()
+                        {
+                            schedule_zorder = Some(columns.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if schedule_compact {
+            let task_state = Arc::clone(&maintenance_state);
+            let task_table = Arc::clone(&table);
+            let task_config = Arc::clone(&config);
+            let handle = tokio::spawn(async move {
+                Self::run_compaction_task(
+                    table_id,
+                    task_table,
+                    task_config,
+                    Arc::clone(&task_state),
+                    table_version,
+                )
+                .await;
+            });
+
+            let mut state = maintenance_state.inner.lock().await;
+            state.compaction_task = Some(handle);
+        }
+
+        if let Some(columns) = schedule_zorder {
+            let task_state = Arc::clone(&maintenance_state);
+            let task_table = Arc::clone(&table);
+            let task_config = Arc::clone(&config);
+            let handle = tokio::spawn(async move {
+                Self::run_zorder_task(
+                    table_id,
+                    task_table,
+                    task_config,
+                    Arc::clone(&task_state),
+                    table_version,
+                    columns,
+                )
+                .await;
+            });
+
+            let mut state = maintenance_state.inner.lock().await;
+            state.zorder_task = Some(handle);
+        }
+
+        Ok(())
+    }
+
+    /// Executes a compaction task and updates maintenance tracking once finished.
+    async fn run_compaction_task(
+        table_id: TableId,
+        table: Arc<Mutex<DeltaTable>>,
+        config: Arc<DeltaTableConfig>,
+        maintenance: Arc<TableMaintenanceState>,
+        baseline_version: i64,
+    ) {
+        let result = async {
+            trace!(
+                table_id = table_id.0,
+                "Starting Delta table compaction task"
+            );
+            let mut table_guard = table.lock().await;
+            compact_table(&mut table_guard, config.as_ref()).await?;
+            let version = table_guard.version().unwrap_or(baseline_version);
+            trace!(
+                table_id = table_id.0,
+                version, "Finished Delta table compaction task"
+            );
+            Ok::<i64, DeltaTableError>(version)
+        }
+        .await;
+
+        let mut state = maintenance.inner.lock().await;
+        match result {
+            Ok(version) => {
+                state.last_compacted_version = version;
+                state.compaction_task = None;
+            }
+            Err(err) => {
+                state.compaction_task = None;
+                error!(
+                    table_id = table_id.0,
+                    error = %err,
+                    "Delta table compaction task failed"
+                );
+            }
+        }
+    }
+
+    /// Executes a Z-order task and updates maintenance tracking once finished.
+    async fn run_zorder_task(
+        table_id: TableId,
+        table: Arc<Mutex<DeltaTable>>,
+        config: Arc<DeltaTableConfig>,
+        maintenance: Arc<TableMaintenanceState>,
+        baseline_version: i64,
+        columns: Vec<String>,
+    ) {
+        let result = async {
+            trace!(
+                table_id = table_id.0,
+                columns = ?columns,
+                "Starting Delta table Z-order task"
+            );
+            let mut table_guard = table.lock().await;
+            zorder_table(&mut table_guard, config.as_ref(), columns).await?;
+            let version = table_guard.version().unwrap_or(baseline_version);
+            trace!(
+                table_id = table_id.0,
+                version, "Finished Delta table Z-order task"
+            );
+            Ok::<i64, DeltaTableError>(version)
+        }
+        .await;
+
+        let mut state = maintenance.inner.lock().await;
+        match result {
+            Ok(version) => {
+                state.last_zordered_version = version;
+                state.zorder_task = None;
+            }
+            Err(err) => {
+                state.zorder_task = None;
+                error!(
+                    table_id = table_id.0,
+                    error = %err,
+                    "Delta table Z-order task failed"
+                );
+            }
+        }
     }
 }
 
@@ -385,9 +641,6 @@ where
     }
 
     async fn write_events(&self, events: Vec<Event>) -> EtlResult<()> {
-        // todo(abhi): Implement CDC event processing as described in PLAN.md
-        // todo(abhi): Group by table, deduplicate by PK, execute delete+append
-
         if events.is_empty() {
             return Ok(());
         }
