@@ -143,13 +143,10 @@ where
             })?;
 
         let table_name = &table_schema.name.name;
-        let table_path = parse_table_uri(format!("{}/{}", self.config.base_uri, table_name)).map_err(|e| {
-            etl_error!(
-                ErrorKind::DestinationError,
-                "Failed to parse table path",
-                e
-            )
-        })?;
+        let table_path = parse_table_uri(format!("{}/{}", self.config.base_uri, table_name))
+            .map_err(|e| {
+                etl_error!(ErrorKind::DestinationError, "Failed to parse table path", e)
+            })?;
 
         let mut table_builder = DeltaTableBuilder::from_uri(table_path).map_err(|e| {
             etl_error!(
