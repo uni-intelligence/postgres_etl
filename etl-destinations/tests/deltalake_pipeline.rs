@@ -104,7 +104,7 @@ async fn append_only_ignores_updates_and_deletes() {
     );
 
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -193,7 +193,7 @@ async fn upsert_merge_validation() {
     );
 
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -269,7 +269,7 @@ async fn merge_with_delete_validation() {
     );
 
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -357,13 +357,13 @@ async fn table_copy_and_streaming_with_restart() {
 
     // Register notifications for table copy completion.
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
         .await;
     let orders_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.orders_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -463,7 +463,7 @@ async fn table_insert_update_delete() {
 
     // Register notifications for table copy completion.
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -568,7 +568,7 @@ async fn table_subsequent_updates() {
 
     // Register notifications for table copy completion.
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -659,13 +659,13 @@ async fn table_truncate_with_batching() {
 
     // Register notifications for table copy completion.
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
         .await;
     let orders_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.orders_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -769,7 +769,7 @@ async fn decimal_precision_scale_mapping() {
     );
 
     let table_sync_done_notification = store
-        .notify_on_table_state(table_id, TableReplicationPhaseType::SyncDone)
+        .notify_on_table_state_type(table_id, TableReplicationPhaseType::SyncDone)
         .await;
 
     pipeline.start().await.unwrap();
@@ -867,7 +867,7 @@ async fn data_type_mapping() {
     );
 
     let table_sync_done_notification = store
-        .notify_on_table_state(table_id, TableReplicationPhaseType::SyncDone)
+        .notify_on_table_state_type(table_id, TableReplicationPhaseType::SyncDone)
         .await;
 
     pipeline.start().await.unwrap();
@@ -948,7 +948,7 @@ async fn test_cdc_deduplication_and_conflict_resolution() {
     );
 
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -1059,7 +1059,7 @@ async fn test_large_transaction_batching() {
     );
 
     let users_state_notify = store
-        .notify_on_table_state(
+        .notify_on_table_state_type(
             database_schema.users_schema().id,
             TableReplicationPhaseType::SyncDone,
         )
@@ -1095,7 +1095,7 @@ async fn test_large_transaction_batching() {
         .await
         .unwrap();
     assert_table_snapshot!("test_large_transaction_batching", users_table.clone());
-    let commits = users_table.history(None).await.unwrap();
+    let commits = users_table.history(None).await.unwrap().collect::<Vec<_>>();
     // Due to the batch timeout, in practice, there will be more commits than the batch size.
     assert!(commits.len() >= (insert_count / batch_size));
 }

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 #![cfg(feature = "deltalake")]
 
+use deltalake::table::builder::parse_table_uri;
 use deltalake::{DeltaResult, DeltaTable, open_table_with_storage_options};
 use etl::store::schema::SchemaStore;
 use etl::store::state::StateStore;
@@ -120,13 +121,6 @@ impl MinioDeltaLakeDatabase {
         DeltaLakeDestination::new(store, config)
     }
 
-    /// Returns the S3 URI for a specific table.
-    ///
-    /// Generates the full S3 path where a table's Delta Lake files would be stored.
-    pub fn get_table_uri(&self, table_name: &TableName) -> String {
-        format!("{}/{}", self.s3_base_uri, table_name.name)
-    }
-
     pub async fn load_table(&self, table_name: &TableName) -> DeltaResult<DeltaTable> {
         let mut storage_options = HashMap::new();
         storage_options.insert("endpoint".to_string(), self.endpoint.clone());
@@ -138,9 +132,11 @@ impl MinioDeltaLakeDatabase {
             "false".to_string(),
         );
 
-        let table =
-            open_table_with_storage_options(&self.get_table_uri(table_name), storage_options)
-                .await?;
+        let table = open_table_with_storage_options(
+            parse_table_uri(format!("{}/{}", self.s3_base_uri, table_name.name))?,
+            storage_options,
+        )
+        .await?;
         Ok(table)
     }
 
