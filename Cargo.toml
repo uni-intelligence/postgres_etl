@@ -44,7 +44,7 @@ config = { version = "0.14", default-features = false }
 const-oid = { version = "0.9.6", default-features = false }
 constant_time_eq = { version = "0.4.2" }
 dashmap = { version = "6.1.0", default-features = false }
-deltalake = { version = "0.28.0", default-features = false }
+deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "19f19db3b521c350f9b7056e45b6a2be8fa13f80", default-features = false }
 fail = { version = "0.5.1", default-features = false }
 futures = { version = "0.3.31", default-features = false }
 gcp-bigquery-client = { version = "0.27.0", default-features = false }
