@@ -57,6 +57,9 @@ jobs:
       matrix:
         postgres_version: [17, 16, 15, 14]
     steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -111,6 +114,9 @@ jobs:
       matrix:
         postgres_version: [17, 16, 15, 14]
     steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+
       - name: Checkout
         uses: actions/checkout@v4
 
