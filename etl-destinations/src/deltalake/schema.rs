@@ -8,7 +8,7 @@ use deltalake::arrow::array::{
     TimestampMicrosecondArray, UInt32Array, new_empty_array,
 };
 use deltalake::arrow::datatypes::{
-    DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema, TimeUnit,
+    DataType as ArrowDataType, DecimalType, Field as ArrowField, Schema as ArrowSchema, TimeUnit,
 };
 use deltalake::arrow::error::ArrowError;
 use deltalake::arrow::record_batch::RecordBatch;
@@ -859,11 +859,10 @@ mod tests {
             postgres_type_to_delta(&PgType::BYTEA).unwrap(),
             DeltaDataType::BINARY
         ));
-        // TODO(abhi): https://github.com/delta-io/delta-rs/issues/3729
-        // assert!(matches!(
-        //     postgres_type_to_delta(&PgType::NUMERIC).unwrap(),
-        //     DeltaDataType::Primitive(PrimitiveType::Decimal(DecimalType { .. }))
-        // ));
+        assert!(matches!(
+            postgres_type_to_delta(&PgType::NUMERIC).unwrap(),
+            DeltaDataType::Primitive(PrimitiveType::Decimal(DecimalType { .. }))
+        ));
     }
 
     #[test]
