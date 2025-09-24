@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, trace};
 
-use crate::deltalake::TableRowEncoder;
+use crate::arrow::rows_to_record_batch;
 use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::events::{materialize_events, materialize_events_append_only};
 use crate::deltalake::maintenance::TableMaintenanceState;
@@ -355,32 +355,21 @@ where
 
         let table = self.table_handle(table_id).await?;
 
-        let table_schema = self
-            .store
-            .get_table_schema(table_id)
-            .await?
-            .ok_or_else(|| {
-                etl_error!(
-                    ErrorKind::MissingTableSchema,
-                    "Table schema not found",
-                    format!("Schema for table {} not found in store", table_id.0)
-                )
-            })?;
-
         let row_length = table_rows.len();
         trace!("Writing {} rows to Delta table", row_length);
+            
+        let config = self.config_for_table_name(&table_schema.name.name);
+        let mut table_guard = table.lock().await;
+        let schema = table_guard.snapshot().schema();
 
         let record_batch =
-            TableRowEncoder::encode_table_rows(&table_schema, table_rows).map_err(|e| {
+            rows_to_record_batch(table_rows.iter(), table_schema.clone()).map_err(|e| {
                 etl_error!(
                     ErrorKind::ConversionError,
                     "Failed to encode table rows",
                     format!("Error converting to Arrow: {}", e)
                 )
             })?;
-
-        let config = self.config_for_table_name(&table_schema.name.name);
-        let mut table_guard = table.lock().await;
         append_to_table(&mut table_guard, config.as_ref(), record_batch)
             .await
             .map_err(|e| {

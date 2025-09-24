@@ -5,7 +5,6 @@ use deltalake::operations::merge::MergeBuilder;
 use deltalake::{DeltaResult, DeltaTable, datafusion::prelude::Expr};
 use etl::types::{TableRow as PgTableRow, TableSchema as PgTableSchema};
 
-use crate::deltalake::TableRowEncoder;
 use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::expr::qualify_primary_keys;
 

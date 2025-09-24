@@ -7,7 +7,7 @@ use arrow::{
         TimestampMicrosecondBuilder,
     },
     datatypes::{
-        DataType, Date32Type, Field, FieldRef, Float32Type, Float64Type, Int16Type, Int32Type,
+        DataType, Date32Type, FieldRef, Float32Type, Float64Type, Int16Type, Int32Type,
         Int64Type, Schema, Time64MicrosecondType, TimeUnit, TimestampMicrosecondType, UInt32Type,
     },
     error::ArrowError,
@@ -15,7 +15,6 @@ use arrow::{
 use chrono::{NaiveDate, NaiveTime};
 use etl::types::{
     ArrayCell, Cell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TableRow,
-    TableSchema as PgTableSchema, Type as PgType,
 };
 
 pub const UNIX_EPOCH: NaiveDate =
@@ -27,7 +26,7 @@ const UUID_BYTE_WIDTH: i32 = 16;
 
 /// Extract numeric precision from Postgres atttypmod
 /// Based on: https://stackoverflow.com/questions/72725508/how-to-calculate-numeric-precision-and-other-vals-from-atttypmod
-fn extract_numeric_precision(atttypmod: i32) -> u8 {
+pub fn extract_numeric_precision(atttypmod: i32) -> u8 {
     if atttypmod == -1 {
         // No limit specified, use maximum precision
         38
@@ -39,13 +38,13 @@ fn extract_numeric_precision(atttypmod: i32) -> u8 {
 
 /// Extract numeric scale from Postgres atttypmod
 /// Based on: https://stackoverflow.com/questions/72725508/how-to-calculate-numeric-precision-and-other-vals-from-atttypmod
-fn extract_numeric_scale(atttypmod: i32) -> i8 {
+pub fn extract_numeric_scale(atttypmod: i32) -> u8 {
     if atttypmod == -1 {
         // No limit specified, use reasonable default scale
         18
     } else {
         let scale = (atttypmod - 4) & 65535;
-        std::cmp::min(scale as i8, 38) // Cap at reasonable scale
+        std::cmp::min(scale as u8, 38) // Cap at reasonable scale
     }
 }
 

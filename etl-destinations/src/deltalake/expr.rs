@@ -1,7 +1,5 @@
 // Utilities related to constructing DataFusion expressions
 
-use crate::deltalake::schema::TableRowEncoder;
-use crate::deltalake::schema::cell_to_scalar_value_for_arrow;
 use deltalake::datafusion::common::Column;
 use deltalake::datafusion::prelude::{Expr, lit};
 use etl::error::EtlResult;
