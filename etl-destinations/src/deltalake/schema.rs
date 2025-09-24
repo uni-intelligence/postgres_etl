@@ -8,7 +8,7 @@ use deltalake::arrow::array::{
     TimestampMicrosecondArray, UInt32Array, new_empty_array,
 };
 use deltalake::arrow::datatypes::{
-    DataType as ArrowDataType, DecimalType, Field as ArrowField, Schema as ArrowSchema, TimeUnit,
+    DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema, TimeUnit,
 };
 use deltalake::arrow::error::ArrowError;
 use deltalake::arrow::record_batch::RecordBatch;
@@ -758,12 +758,17 @@ pub(crate) fn postgres_to_delta_schema(schema: &PgTableSchema) -> DeltaResult<De
         })
         .collect::<Result<Vec<_>, deltalake::DeltaTableError>>()?;
 
-    Ok(DeltaSchema::new(fields))
+    let delta_schema = DeltaSchema::try_new(fields)?;
+    Ok(delta_schema)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+    use deltalake::{DecimalType, PrimitiveType};
+    use etl::types::{ColumnSchema, TableName, TableSchema as PgTableSchema, Type as PgType};
+    use uuid::Uuid;
 
     fn create_test_schema() -> PgTableSchema {
         PgTableSchema {
@@ -969,10 +974,6 @@ mod tests {
             );
         }
     }
-
-    use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-    use etl::types::{ColumnSchema, TableName, TableSchema as PgTableSchema, Type as PgType};
-    use uuid::Uuid;
 
     #[test]
     fn test_empty_table_rows() {
