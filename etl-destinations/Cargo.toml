@@ -29,6 +29,7 @@ deltalake = [
     "dep:futures",
     "dep:tokio",
     "dep:tracing",
+    "arrow",
 ]
 
 [dependencies]

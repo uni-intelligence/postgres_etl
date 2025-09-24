@@ -1,6 +1,7 @@
 // Utilities related to constructing DataFusion expressions
 
 use crate::deltalake::schema::TableRowEncoder;
+use crate::deltalake::schema::cell_to_scalar_value_for_arrow;
 use deltalake::datafusion::common::Column;
 use deltalake::datafusion::prelude::{Expr, lit};
 use etl::error::EtlResult;
@@ -16,7 +17,7 @@ pub fn cell_to_scalar_expr(
         &schema.column_schemas[col_idx].typ,
         schema.column_schemas[col_idx].modifier,
     );
-    let sv = TableRowEncoder::cell_to_scalar_value_for_arrow(cell, &arrow_type)?;
+    let sv = cell_to_scalar_value_for_arrow(cell, &arrow_type)?;
     Ok(lit(sv))
 }
 
