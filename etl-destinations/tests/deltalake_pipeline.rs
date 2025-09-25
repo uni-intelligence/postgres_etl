@@ -15,6 +15,8 @@ use rand::random;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use etl::types::PgNumeric;
 use serde_json::json;
+use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -1212,4 +1214,87 @@ async fn test_large_transaction_batching() {
     let commits = users_table.history(None).await.unwrap().collect::<Vec<_>>();
     // Due to the batch timeout, in practice, there will be more commits than the batch size.
     assert!(commits.len() >= (insert_count / batch_size));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compaction_minimizes_small_files() {
+    init_test_tracing();
+
+    let database = spawn_source_database().await;
+    let database_schema = setup_test_database_schema(&database, TableSelection::UsersOnly).await;
+
+    let delta_database = setup_delta_connection().await;
+
+    let store = NotifyingStore::new();
+
+    // Configure compaction to run after every commit for the users table.
+    let mut table_config: HashMap<String, Arc<etl_destinations::deltalake::DeltaTableConfig>> =
+        HashMap::new();
+    table_config.insert(
+        database_schema.users_schema().name.name.clone(),
+        Arc::new(etl_destinations::deltalake::DeltaTableConfig {
+            compact_after_commits: Some(NonZeroU64::new(1).unwrap()),
+            ..Default::default()
+        }),
+    );
+
+    let raw_destination = delta_database
+        .build_destination_with_config(store.clone(), table_config)
+        .await;
+    let destination = TestDestinationWrapper::wrap(raw_destination);
+
+    // Use a batch size of 1 so each insert becomes a separate commit and small file.
+    let pipeline_id: PipelineId = random();
+    let mut pipeline = create_pipeline_with(
+        &database.config,
+        pipeline_id,
+        database_schema.publication_name(),
+        store.clone(),
+        destination.clone(),
+        Some(BatchConfig {
+            max_size: 1,
+            max_fill_ms: 1000,
+        }),
+    );
+
+    let users_state_notify = store
+        .notify_on_table_state_type(
+            database_schema.users_schema().id,
+            TableReplicationPhaseType::SyncDone,
+        )
+        .await;
+
+    pipeline.start().await.unwrap();
+    users_state_notify.notified().await;
+
+    // Generate several inserts to create many small files (one per commit).
+    let insert_count: u64 = 12;
+    let event_notify = destination
+        .wait_for_events_count(vec![(EventType::Insert, insert_count)])
+        .await;
+
+    for i in 1..=insert_count {
+        database
+            .insert_values(
+                database_schema.users_schema().name.clone(),
+                &["name", "age"],
+                &[&format!("c_user_{i}"), &(i as i32)],
+            )
+            .await
+            .unwrap();
+    }
+
+    event_notify.notified().await;
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    pipeline.shutdown_and_wait().await.unwrap();
+
+    let users_table = delta_database
+        .load_table(&database_schema.users_schema().name)
+        .await
+        .unwrap();
+
+    assert_table_snapshot!("compaction_minimizes_small_files", users_table.clone());
+    assert!(users_table.snapshot().unwrap().file_paths_iter().count() <= 12);
 }
