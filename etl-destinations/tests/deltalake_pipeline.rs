@@ -8,14 +8,16 @@ use etl::test_utils::notify::NotifyingStore;
 use etl::test_utils::pipeline::{create_pipeline, create_pipeline_with};
 use etl::test_utils::test_destination_wrapper::TestDestinationWrapper;
 use etl::test_utils::test_schema::{TableSelection, insert_mock_data, setup_test_database_schema};
-use etl::types::{EventType, PipelineId};
+use etl::types::{EventType, PipelineId, ToSql};
 use etl_telemetry::tracing::init_test_tracing;
 use rand::random;
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use etl::types::PgNumeric;
+use serde_json::json;
 use std::str::FromStr;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use deltalake::arrow::util::pretty::pretty_format_batches;
 use deltalake::{DeltaResult, DeltaTable, DeltaTableError};
@@ -826,16 +828,47 @@ async fn data_type_mapping() {
     let table_name = test_table_name("comprehensive_types");
 
     let columns = vec![
-        ("id", "bigint primary key"), // Manually define id column without sequence
-        ("name", "text"),             // TEXT -> STRING
-        ("age", "int4"),              // INT4 -> INTEGER
-        ("height", "float8"),         // FLOAT8 -> DOUBLE
-        ("active", "bool"),           // BOOL -> BOOLEAN
-        ("birth_date", "date"),       // DATE -> DATE
-        ("created_at", "timestamp"),  // TIMESTAMP -> TIMESTAMP_NTZ (no timezone)
-        ("updated_at", "timestamptz"), // TIMESTAMPTZ -> TIMESTAMP (with timezone)
-        ("profile_data", "bytea"),    // BYTEA -> BINARY
-        ("salary", "numeric(10,2)"),  // NUMERIC -> DECIMAL
+        ("id", "bigint primary key"),
+        ("bool_col", "boolean"),
+        ("bpchar_col", "char(5)"),
+        ("varchar_col", "varchar(255)"),
+        ("name_col", "name"),
+        ("text_col", "text"),
+        ("int2_col", "smallint"),
+        ("int4_col", "integer"),
+        ("int8_col", "bigint"),
+        ("float4_col", "real"),
+        ("float8_col", "double precision"),
+        ("numeric_col", "numeric(10,2)"),
+        ("date_col", "date"),
+        ("time_col", "time"),
+        ("timestamp_col", "timestamp"),
+        ("timestamptz_col", "timestamptz"),
+        ("uuid_col", "uuid"),
+        ("json_col", "json"),
+        ("jsonb_col", "jsonb"),
+        ("oid_col", "oid"),
+        ("bytea_col", "bytea"),
+        ("bool_array_col", "boolean[]"),
+        ("bpchar_array_col", "char(5)[]"),
+        ("varchar_array_col", "varchar(255)[]"),
+        ("name_array_col", "name[]"),
+        ("text_array_col", "text[]"),
+        ("int2_array_col", "smallint[]"),
+        ("int4_array_col", "integer[]"),
+        ("int8_array_col", "bigint[]"),
+        ("float4_array_col", "real[]"),
+        ("float8_array_col", "double precision[]"),
+        ("numeric_array_col", "numeric(10,2)[]"),
+        ("date_array_col", "date[]"),
+        ("time_array_col", "time[]"),
+        ("timestamp_array_col", "timestamp[]"),
+        ("timestamptz_array_col", "timestamptz[]"),
+        ("uuid_array_col", "uuid[]"),
+        ("json_array_col", "json[]"),
+        ("jsonb_array_col", "jsonb[]"),
+        ("oid_array_col", "oid[]"),
+        ("bytea_array_col", "bytea[]"),
     ];
 
     let table_id = database
@@ -878,42 +911,123 @@ async fn data_type_mapping() {
         .wait_for_events_count(vec![(EventType::Insert, 1)])
         .await;
 
-    let birth_date = NaiveDate::from_ymd_opt(1993, 1, 15).unwrap();
-    let created_at =
-        NaiveDateTime::parse_from_str("2023-01-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-    let updated_at = DateTime::parse_from_rfc3339("2023-01-01T12:00:00+00:00")
-        .unwrap()
-        .with_timezone(&Utc);
-    let profile_data = b"Hello".to_vec();
+    let id_value = 1i64;
+    let bool_value = true;
+    let bpchar_value = "fixed".to_string();
+    let varchar_value = "varchar sample".to_string();
+    let name_value = "pg_name_value".to_string();
+    let text_value = "text field content".to_string();
+    let int2_value = 42i16;
+    let int4_value = 4242i32;
+    let int8_value = 4242_4242i64;
+    let float4_value = 1.25f32;
+    let float8_value = 9.875f64;
+    let numeric_value = PgNumeric::from_str("12345.67").unwrap();
+    let date_value = NaiveDate::from_ymd_opt(1993, 1, 15).unwrap();
+    let time_value = NaiveTime::from_hms_micro_opt(10, 11, 12, 123_456).unwrap();
+    let timestamp_value = NaiveDateTime::new(
+        NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+        NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+    );
+    let timestamptz_value = DateTime::<Utc>::from_naive_utc_and_offset(timestamp_value, Utc);
+    let uuid_value = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let json_value = json!({"kind": "json"});
+    let jsonb_value = json!({"kind": "jsonb"});
+    let oid_value = 424_242u32;
+    let bytea_value = b"Hello Delta".to_vec();
+
+    let bool_array = vec![true, false, true];
+    let bpchar_array = vec!["one".to_string(), "two".to_string()];
+    let varchar_array = vec!["alpha".to_string(), "beta".to_string()];
+    let name_array = vec!["first_name".to_string(), "second_name".to_string()];
+    let text_array = vec!["text one".to_string(), "text two".to_string()];
+    let int2_array = vec![1i16, 2i16, 3i16];
+    let int4_array = vec![10i32, 20i32];
+    let int8_array = vec![100i64, 200i64];
+    let float4_array = vec![1.5f32, 2.5f32];
+    let float8_array = vec![3.5f64, 4.5f64];
+    let numeric_array = vec![
+        PgNumeric::from_str("10.10").unwrap(),
+        PgNumeric::from_str("20.20").unwrap(),
+    ];
+    let date_array = vec![
+        NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+        NaiveDate::from_ymd_opt(2020, 12, 31).unwrap(),
+    ];
+    let time_array = vec![
+        NaiveTime::from_hms_micro_opt(1, 2, 3, 0).unwrap(),
+        NaiveTime::from_hms_micro_opt(4, 5, 6, 789_000).unwrap(),
+    ];
+    let timestamp_array = vec![
+        NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2021, 3, 14).unwrap(),
+            NaiveTime::from_hms_opt(1, 59, 26).unwrap(),
+        ),
+        NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2022, 6, 30).unwrap(),
+            NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+        ),
+    ];
+    let timestamptz_array: Vec<DateTime<Utc>> = timestamp_array
+        .iter()
+        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(*dt, Utc))
+        .collect();
+    let uuid_array = vec![
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+        Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+    ];
+    let json_array = vec![json!({"idx": 1}), json!({"idx": 2})];
+    let jsonb_array = vec![json!({"code": "a"}), json!({"code": "b"})];
+    let oid_array = vec![7_000u32, 7_001u32];
+    let bytea_array = vec![b"bytes1".to_vec(), b"bytes2".to_vec()];
+
+    let column_names: Vec<&str> = columns.iter().map(|(name, _)| *name).collect();
+    let values: Vec<&(dyn ToSql + Sync)> = vec![
+        &id_value,
+        &bool_value,
+        &bpchar_value,
+        &varchar_value,
+        &name_value,
+        &text_value,
+        &int2_value,
+        &int4_value,
+        &int8_value,
+        &float4_value,
+        &float8_value,
+        &numeric_value,
+        &date_value,
+        &time_value,
+        &timestamp_value,
+        &timestamptz_value,
+        &uuid_value,
+        &json_value,
+        &jsonb_value,
+        &oid_value,
+        &bytea_value,
+        &bool_array,
+        &bpchar_array,
+        &varchar_array,
+        &name_array,
+        &text_array,
+        &int2_array,
+        &int4_array,
+        &int8_array,
+        &float4_array,
+        &float8_array,
+        &numeric_array,
+        &date_array,
+        &time_array,
+        &timestamp_array,
+        &timestamptz_array,
+        &uuid_array,
+        &json_array,
+        &jsonb_array,
+        &oid_array,
+        &bytea_array,
+    ];
 
     database
-        .insert_values(
-            table_name.clone(),
-            &[
-                "id",
-                "name",
-                "age",
-                "height",
-                "active",
-                "birth_date",
-                "created_at",
-                "updated_at",
-                "profile_data",
-                "salary",
-            ],
-            &[
-                &1i64,
-                &"John Doe",
-                &30i32,
-                &5.9f64,
-                &true,
-                &birth_date,
-                &created_at,
-                &updated_at,
-                &profile_data,
-                &PgNumeric::from_str("12345.6789").unwrap(),
-            ],
-        )
+        .insert_values(table_name.clone(), &column_names, &values)
         .await
         .unwrap();
 

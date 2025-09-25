@@ -1,22 +1,53 @@
 ---
 source: etl-destinations/tests/deltalake_pipeline.rs
-expression: table_name_ref
+expression: table
 ---
 # Schema
 - id: Primitive(Long) nullable=false
-- name: Primitive(String) nullable=true
-- age: Primitive(Integer) nullable=true
-- height: Primitive(Double) nullable=true
-- active: Primitive(Boolean) nullable=true
-- birth_date: Primitive(Date) nullable=true
-- created_at: Primitive(TimestampNtz) nullable=true
-- updated_at: Primitive(Timestamp) nullable=true
-- profile_data: Primitive(Binary) nullable=true
-- salary: Primitive(Decimal(DecimalType { precision: 10, scale: 2 })) nullable=true
+- bool_col: Primitive(Boolean) nullable=true
+- bpchar_col: Primitive(String) nullable=true
+- varchar_col: Primitive(String) nullable=true
+- name_col: Primitive(String) nullable=true
+- text_col: Primitive(String) nullable=true
+- int2_col: Primitive(Integer) nullable=true
+- int4_col: Primitive(Integer) nullable=true
+- int8_col: Primitive(Long) nullable=true
+- float4_col: Primitive(Float) nullable=true
+- float8_col: Primitive(Double) nullable=true
+- numeric_col: Primitive(Decimal(DecimalType { precision: 10, scale: 2 })) nullable=true
+- date_col: Primitive(Date) nullable=true
+- time_col: Primitive(Timestamp) nullable=true
+- timestamp_col: Primitive(TimestampNtz) nullable=true
+- timestamptz_col: Primitive(Timestamp) nullable=true
+- uuid_col: Primitive(String) nullable=true
+- json_col: Primitive(String) nullable=true
+- jsonb_col: Primitive(String) nullable=true
+- oid_col: Primitive(Long) nullable=true
+- bytea_col: Primitive(Binary) nullable=true
+- bool_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Boolean), contains_null: true }) nullable=true
+- bpchar_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- varchar_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- name_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- text_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- int2_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Integer), contains_null: true }) nullable=true
+- int4_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Integer), contains_null: true }) nullable=true
+- int8_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Long), contains_null: true }) nullable=true
+- float4_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Float), contains_null: true }) nullable=true
+- float8_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Double), contains_null: true }) nullable=true
+- numeric_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- date_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Date), contains_null: true }) nullable=true
+- time_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Timestamp), contains_null: true }) nullable=true
+- timestamp_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(TimestampNtz), contains_null: true }) nullable=true
+- timestamptz_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Timestamp), contains_null: true }) nullable=true
+- uuid_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- json_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- jsonb_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(String), contains_null: true }) nullable=true
+- oid_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Long), contains_null: true }) nullable=true
+- bytea_array_col: Array(ArrayType { type_name: "array", element_type: Primitive(Binary), contains_null: true }) nullable=true
 
 # Data
-+----+----------+-----+--------+--------+------------+---------------------+----------------------+--------------+----------+
-| id | name     | age | height | active | birth_date | created_at          | updated_at           | profile_data | salary   |
-+----+----------+-----+--------+--------+------------+---------------------+----------------------+--------------+----------+
-| 1  | John Doe | 30  | 5.9    | true   | 1993-01-15 | 2023-01-01T12:00:00 | 2023-01-01T12:00:00Z | 48656c6c6f   | 12345.68 |
-+----+----------+-----+--------+--------+------------+---------------------+----------------------+--------------+----------+
++----+----------+------------+----------------+---------------+--------------------+----------+----------+----------+------------+------------+-------------+------------+-----------------------------+---------------------+----------------------+----------+-----------------+------------------+---------+------------------------+---------------------+------------------+-------------------+---------------------------+----------------------+----------------+----------------+----------------+------------------+------------------+-------------------+--------------------------+--------------------------------------------------+--------------------------------------------+----------------------------------------------+------------------------------------------------------------------------------+------------------------+------------------------------+---------------+------------------------------+
+| id | bool_col | bpchar_col | varchar_col    | name_col      | text_col           | int2_col | int4_col | int8_col | float4_col | float8_col | numeric_col | date_col   | time_col                    | timestamp_col       | timestamptz_col      | uuid_col | json_col        | jsonb_col        | oid_col | bytea_col              | bool_array_col      | bpchar_array_col | varchar_array_col | name_array_col            | text_array_col       | int2_array_col | int4_array_col | int8_array_col | float4_array_col | float8_array_col | numeric_array_col | date_array_col           | time_array_col                                   | timestamp_array_col                        | timestamptz_array_col                        | uuid_array_col                                                               | json_array_col         | jsonb_array_col              | oid_array_col | bytea_array_col              |
++----+----------+------------+----------------+---------------+--------------------+----------+----------+----------+------------+------------+-------------+------------+-----------------------------+---------------------+----------------------+----------+-----------------+------------------+---------+------------------------+---------------------+------------------+-------------------+---------------------------+----------------------+----------------+----------------+----------------+------------------+------------------+-------------------+--------------------------+--------------------------------------------------+--------------------------------------------+----------------------------------------------+------------------------------------------------------------------------------+------------------------+------------------------------+---------------+------------------------------+
+| 1  | true     | fixed      | varchar sample | pg_name_value | text field content | 42       | 4242     | 42424242 | 1.25       | 9.875      | 12345.67    | 1993-01-15 | 1970-01-01T10:11:12.123456Z | 2023-01-01T12:00:00 | 2023-01-01T12:00:00Z |          | {"kind":"json"} | {"kind":"jsonb"} | 424242  | 48656c6c6f2044656c7461 | [true, false, true] | [one  , two  ]   | [alpha, beta]     | [first_name, second_name] | [text one, text two] | [1, 2, 3]      | [10, 20]       | [100, 200]     | [1.5, 2.5]       | [3.5, 4.5]       | [10.10, 20.20]    | [2020-01-01, 2020-12-31] | [1970-01-01T01:02:03Z, 1970-01-01T04:05:06.789Z] | [2021-03-14T01:59:26, 2022-06-30T23:00:00] | [2021-03-14T01:59:26Z, 2022-06-30T23:00:00Z] | [00000000-0000-0000-0000-000000000001, 00000000-0000-0000-0000-000000000002] | [{"idx":1}, {"idx":2}] | [{"code":"a"}, {"code":"b"}] | [7000, 7001]  | [627974657331, 627974657332] |
++----+----------+------------+----------------+---------------+--------------------+----------+----------+----------+------------+------------+-------------+------------+-----------------------------+---------------------+----------------------+----------+-----------------+------------------+---------+------------------------+---------------------+------------------+-------------------+---------------------------+----------------------+----------------+----------------+----------------+------------------+------------------+-------------------+--------------------------+--------------------------------------------------+--------------------------------------------+----------------------------------------------+------------------------------------------------------------------------------+------------------------+------------------------------+---------------+------------------------------+

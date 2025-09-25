@@ -102,7 +102,12 @@ fn build_array_for_field(rows: &[TableRow], field_idx: usize, data_type: &DataTy
             build_timestamptz_array(rows, field_idx, tz)
         }
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
-            build_primitive_array::<TimestampMicrosecondType, _>(rows, field_idx, cell_to_timestamp)
+            // Support both naive timestamps and time-of-day encoded as timestamp-from-epoch.
+            build_primitive_array::<TimestampMicrosecondType, _>(
+                rows,
+                field_idx,
+                cell_to_timestamp_or_time,
+            )
         }
         DataType::Decimal128(precision, scale) => {
             build_decimal128_array(rows, field_idx, *precision, *scale)
@@ -188,7 +193,12 @@ fn build_timestamptz_array(rows: &[TableRow], field_idx: usize, tz: &str) -> Arr
     let mut builder = TimestampMicrosecondBuilder::new().with_timezone(tz);
 
     for row in rows {
-        let arrow_value = cell_to_timestamptz(&row.values[field_idx]);
+        // Accept either timestamptz values or time-of-day (encoded from epoch date).
+        let arrow_value = match &row.values[field_idx] {
+            Cell::TimestampTz(_) => cell_to_timestamptz(&row.values[field_idx]),
+            Cell::Time(_) => cell_to_time_as_timestamp(&row.values[field_idx]),
+            _ => None,
+        };
         builder.append_option(arrow_value);
     }
 
@@ -429,6 +439,20 @@ fn cell_to_timestamp(cell: &Cell) -> Option<i64> {
     }
 }
 
+/// Converts a [`Cell`] to a 64-bit timestamp value (microseconds since Unix epoch),
+/// accepting either a naive timestamp or a time-of-day.
+///
+/// - [`Cell::Timestamp`] is converted like [`cell_to_timestamp`].
+/// - [`Cell::Time`] is converted to microseconds since Unix epoch by treating it as
+///   a time on the Unix epoch date (1970-01-01T00:00:00).
+fn cell_to_timestamp_or_time(cell: &Cell) -> Option<i64> {
+    match cell {
+        Cell::Timestamp(_) => cell_to_timestamp(cell),
+        Cell::Time(time) => time.signed_duration_since(MIDNIGHT).num_microseconds(),
+        _ => None,
+    }
+}
+
 /// Converts a [`Cell`] to a timezone-aware timestamp value (microseconds since Unix epoch).
 ///
 /// Transforms timezone-aware [`Cell::TimestampTz`] values into microseconds
@@ -530,7 +554,7 @@ fn build_list_array(rows: &[TableRow], field_idx: usize, field: FieldRef) -> Arr
         DataType::Float64 => build_float64_list_array(rows, field_idx, field),
         DataType::Utf8 => build_string_list_array(rows, field_idx, field),
         DataType::Binary => build_binary_list_array(rows, field_idx, field),
-        DataType::LargeBinary => build_binary_list_array(rows, field_idx, field),
+        DataType::LargeBinary => build_large_binary_list_array(rows, field_idx, field),
         DataType::Date32 => build_date32_list_array(rows, field_idx, field),
         DataType::Time64(TimeUnit::Microsecond) => build_time64_list_array(rows, field_idx, field),
         DataType::Time64(TimeUnit::Nanosecond) => build_time64_list_array(rows, field_idx, field),
@@ -791,6 +815,34 @@ fn build_string_list_array(rows: &[TableRow], field_idx: usize, field: FieldRef)
 
 /// Builds a list array for binary elements.
 fn build_binary_list_array(rows: &[TableRow], field_idx: usize, field: FieldRef) -> ArrayRef {
+    let mut list_builder = ListBuilder::new(BinaryBuilder::new()).with_field(field.clone());
+
+    for row in rows {
+        if let Some(array_cell) = cell_to_array_cell(&row.values[field_idx]) {
+            match array_cell {
+                ArrayCell::Bytes(vec) => {
+                    for item in vec {
+                        match item {
+                            Some(bytes) => list_builder.values().append_value(bytes),
+                            None => list_builder.values().append_null(),
+                        }
+                    }
+                    list_builder.append(true);
+                }
+                _ => {
+                    return build_list_array_for_strings(rows, field_idx, field);
+                }
+            }
+        } else {
+            list_builder.append_null();
+        }
+    }
+
+    Arc::new(list_builder.finish())
+}
+
+/// Builds a list array for large binary elements.
+fn build_large_binary_list_array(rows: &[TableRow], field_idx: usize, field: FieldRef) -> ArrayRef {
     let mut list_builder = ListBuilder::new(LargeBinaryBuilder::new()).with_field(field.clone());
 
     for row in rows {
@@ -889,6 +941,15 @@ fn build_timestamp_list_array(rows: &[TableRow], field_idx: usize, field: FieldR
                     }
                     list_builder.append(true);
                 }
+                ArrayCell::Time(vec) => {
+                    for item in vec {
+                        let arrow_value = item.and_then(|time| {
+                            time.signed_duration_since(MIDNIGHT).num_microseconds()
+                        });
+                        list_builder.values().append_option(arrow_value);
+                    }
+                    list_builder.append(true);
+                }
                 _ => {
                     return build_list_array_for_strings(rows, field_idx, field);
                 }
@@ -923,6 +984,15 @@ fn build_timestamptz_list_array(rows: &[TableRow], field_idx: usize, field: Fiel
                     }
                     list_builder.append(true);
                 }
+                ArrayCell::Time(vec) => {
+                    for item in vec {
+                        let arrow_value = item.and_then(|time| {
+                            time.signed_duration_since(MIDNIGHT).num_microseconds()
+                        });
+                        list_builder.values().append_option(arrow_value);
+                    }
+                    list_builder.append(true);
+                }
                 _ => {
                     return build_list_array_for_strings(rows, field_idx, field);
                 }
@@ -933,6 +1003,14 @@ fn build_timestamptz_list_array(rows: &[TableRow], field_idx: usize, field: Fiel
     }
 
     Arc::new(list_builder.finish())
+}
+
+/// Converts a [`Cell::Time`] to a timestamp-from-epoch in microseconds.
+fn cell_to_time_as_timestamp(cell: &Cell) -> Option<i64> {
+    match cell {
+        Cell::Time(time) => time.signed_duration_since(MIDNIGHT).num_microseconds(),
+        _ => None,
+    }
 }
 
 /// Builds a list array for UUID elements.
@@ -2608,7 +2686,7 @@ mod tests {
         use arrow::array::ListArray;
         use arrow::datatypes::Field;
 
-        let field = Field::new("items", DataType::LargeBinary, true);
+        let field = Field::new("items", DataType::Binary, true);
         let field_ref = Arc::new(field);
 
         let test_bytes_1 = vec![1, 2, 3, 4, 5];
@@ -2646,7 +2724,7 @@ mod tests {
         let first_list = list_array.value(0);
         let binary_array = first_list
             .as_any()
-            .downcast_ref::<arrow::array::LargeBinaryArray>()
+            .downcast_ref::<arrow::array::BinaryArray>()
             .unwrap();
         assert_eq!(binary_array.len(), 3);
         assert_eq!(binary_array.value(0), test_bytes_1);
@@ -2658,7 +2736,7 @@ mod tests {
         let second_list = list_array.value(1);
         let binary_array = second_list
             .as_any()
-            .downcast_ref::<arrow::array::LargeBinaryArray>()
+            .downcast_ref::<arrow::array::BinaryArray>()
             .unwrap();
         assert_eq!(binary_array.len(), 1);
         assert_eq!(binary_array.value(0), empty_bytes);
