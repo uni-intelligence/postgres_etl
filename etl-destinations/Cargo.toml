@@ -8,7 +8,6 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-arrow = ["dep:arrow"]
 bigquery = [
     "dep:gcp-bigquery-client",
     "dep:prost",
@@ -21,7 +20,7 @@ iceberg = [
     "dep:iceberg-catalog-rest",
     "dep:parquet",
     "dep:uuid",
-    "arrow",
+    "dep:arrow",
 ]
 deltalake = [
     "dep:dashmap",
@@ -29,7 +28,7 @@ deltalake = [
     "dep:futures",
     "dep:tokio",
     "dep:tracing",
-    "arrow",
+    "dep:arrow",
 ]
 
 [dependencies]

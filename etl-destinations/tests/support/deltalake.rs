@@ -133,7 +133,10 @@ impl MinioDeltaLakeDatabase {
         );
 
         let table = open_table_with_storage_options(
-            parse_table_uri(format!("{}/{}", self.s3_base_uri, table_name.name))?,
+            parse_table_uri(format!(
+                "{}/{}/{}",
+                self.s3_base_uri, table_name.schema, table_name.name
+            ))?,
             storage_options,
         )
         .await?;

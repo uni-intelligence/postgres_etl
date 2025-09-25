@@ -20,7 +20,7 @@ use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::events::{materialize_events, materialize_events_append_only};
 use crate::deltalake::maintenance::TableMaintenanceState;
 use crate::deltalake::operations::{append_to_table, delete_from_table, merge_to_table};
-use crate::deltalake::schema::postgres_to_delta_schema;
+use crate::deltalake::schema::{postgres_to_arrow_schema, postgres_to_delta_schema};
 
 /// Configuration for Delta Lake destination
 #[derive(Debug, Clone)]
@@ -111,10 +111,12 @@ where
             })?;
 
         let table_name = &table_schema.name.name;
-        let table_path = parse_table_uri(format!("{}/{}", self.config.base_uri, table_name))
-            .map_err(|e| {
-                etl_error!(ErrorKind::DestinationError, "Failed to parse table path", e)
-            })?;
+        let pg_table_schema = &table_schema.name.schema;
+        let table_path = parse_table_uri(format!(
+            "{}/{}/{}",
+            self.config.base_uri, pg_table_schema, table_name
+        ))
+        .map_err(|e| etl_error!(ErrorKind::DestinationError, "Failed to parse table path", e))?;
 
         let mut table_builder = DeltaTableBuilder::from_uri(table_path).map_err(|e| {
             etl_error!(
@@ -245,14 +247,16 @@ where
             .append_only;
 
         if is_append_only {
-            let rows = materialize_events_append_only(&events, &table_schema)?;
-            self.write_table_rows_internal(&table_id, rows).await?;
+            let row_refs = materialize_events_append_only(&events, &table_schema)?;
+            let rows: Vec<PgTableRow> = row_refs.into_iter().cloned().collect();
+            self.write_table_rows_internal(&table_id, &rows).await?;
         } else {
-            let (delete_predicates, rows) = materialize_events(&events, &table_schema)?;
+            let (delete_predicates, row_refs) = materialize_events(&events, &table_schema)?;
+            let rows: Vec<PgTableRow> = row_refs.into_iter().cloned().collect();
             self.execute_delete_append_transaction_expr(
                 table_id,
                 &table_schema,
-                rows,
+                &rows,
                 delete_predicates,
             )
             .await?;
@@ -266,7 +270,7 @@ where
         &self,
         table_id: TableId,
         table_schema: &PgTableSchema,
-        upsert_rows: Vec<&PgTableRow>,
+        upsert_rows: &[PgTableRow],
         delete_predicates: Vec<Expr>,
     ) -> EtlResult<()> {
         let combined_predicate = delete_predicates.into_iter().reduce(|acc, e| acc.or(e));
@@ -347,7 +351,7 @@ where
     async fn write_table_rows_internal(
         &self,
         table_id: &TableId,
-        table_rows: Vec<&PgTableRow>,
+        table_rows: &[PgTableRow],
     ) -> EtlResult<()> {
         if table_rows.is_empty() {
             return Ok(());
@@ -355,21 +359,39 @@ where
 
         let table = self.table_handle(table_id).await?;
 
-        let row_length = table_rows.len();
-        trace!("Writing {} rows to Delta table", row_length);
-            
-        let config = self.config_for_table_name(&table_schema.name.name);
-        let mut table_guard = table.lock().await;
-        let schema = table_guard.snapshot().schema();
-
-        let record_batch =
-            rows_to_record_batch(table_rows.iter(), table_schema.clone()).map_err(|e| {
+        let table_schema = self
+            .store
+            .get_table_schema(table_id)
+            .await?
+            .ok_or_else(|| {
                 etl_error!(
-                    ErrorKind::ConversionError,
-                    "Failed to encode table rows",
-                    format!("Error converting to Arrow: {}", e)
+                    ErrorKind::MissingTableSchema,
+                    "Table schema not found",
+                    format!("Schema for table {} not found in store", table_id.0)
                 )
             })?;
+
+        let row_length = table_rows.len();
+        trace!("Writing {} rows to Delta table", row_length);
+
+        let mut table_guard = table.lock().await;
+        let arrow_schema = postgres_to_arrow_schema(&table_schema).map_err(|e| {
+            etl_error!(
+                ErrorKind::ConversionError,
+                "Failed to convert table schema to Arrow schema",
+                e
+            )
+        })?;
+
+        let config = self.config_for_table_name(&table_schema.name.name);
+
+        let record_batch = rows_to_record_batch(table_rows, arrow_schema.clone()).map_err(|e| {
+            etl_error!(
+                ErrorKind::ConversionError,
+                "Failed to encode table rows",
+                format!("Error converting to Arrow: {}", e)
+            )
+        })?;
         append_to_table(&mut table_guard, config.as_ref(), record_batch)
             .await
             .map_err(|e| {
@@ -450,8 +472,7 @@ where
         table_id: TableId,
         table_rows: Vec<PgTableRow>,
     ) -> EtlResult<()> {
-        self.write_table_rows_internal(&table_id, table_rows.iter().collect())
-            .await
+        self.write_table_rows_internal(&table_id, &table_rows).await
     }
 
     async fn write_events(&self, events: Vec<Event>) -> EtlResult<()> {

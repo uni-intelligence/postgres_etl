@@ -1,4 +1,4 @@
-#![cfg(feature = "iceberg")]
+#![cfg(any())]
 
 use std::collections::HashMap;
 

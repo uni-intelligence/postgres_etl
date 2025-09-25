@@ -1,34 +1,28 @@
 // Utilities related to constructing DataFusion expressions
 
-use deltalake::datafusion::common::Column;
-use deltalake::datafusion::prelude::{Expr, lit};
-use etl::error::EtlResult;
-use etl::types::{Cell as PgCell, TableRow as PgTableRow, TableSchema as PgTableSchema};
+use deltalake::datafusion::prelude::Expr;
+use deltalake::datafusion::scalar::ScalarValue;
+use deltalake::datafusion::{common::Column, prelude::lit};
+use etl::{
+    error::{ErrorKind, EtlResult},
+    etl_error,
+    types::{
+        Cell as PgCell, ColumnSchema as PgColumnSchema, TableId, TableName, TableRow as PgTableRow,
+        TableSchema as PgTableSchema,
+    },
+};
 
-/// Convert `Cell` to DataFusion `ScalarValue` wrapped as a literal `Expr`.
-pub fn cell_to_scalar_expr(
-    cell: &PgCell,
-    schema: &PgTableSchema,
-    col_idx: usize,
-) -> EtlResult<Expr> {
-    let arrow_type = TableRowEncoder::postgres_type_to_arrow_type(
-        &schema.column_schemas[col_idx].typ,
-        schema.column_schemas[col_idx].modifier,
-    );
-    let sv = cell_to_scalar_value_for_arrow(cell, &arrow_type)?;
-    Ok(lit(sv))
-}
+use crate::{arrow::rows_to_record_batch, deltalake::schema::postgres_to_arrow_schema};
 
 /// Build a DataFusion predicate `Expr` representing equality over all primary key columns
 /// for the provided `row` according to `table_schema`.
-pub fn build_pk_expr(table_schema: &PgTableSchema, row: &PgTableRow) -> Expr {
+pub fn build_pk_expr(table_schema: &PgTableSchema, row: &PgTableRow) -> EtlResult<Expr> {
     let mut pk_expr: Option<Expr> = None;
     for (idx, column_schema) in table_schema.column_schemas.iter().enumerate() {
         if !column_schema.primary {
             continue;
         }
-        let value_expr = cell_to_scalar_expr(&row.values[idx], table_schema, idx)
-            .expect("Failed to convert cell to scalar expression");
+        let value_expr = cell_to_scalar_expr(&row.values[idx], column_schema)?;
         let this_col_expr =
             Expr::Column(Column::new_unqualified(column_schema.name.clone())).eq(value_expr);
         pk_expr = Some(match pk_expr {
@@ -38,7 +32,44 @@ pub fn build_pk_expr(table_schema: &PgTableSchema, row: &PgTableRow) -> Expr {
     }
 
     // In practice, this should never happen as the tables we're replicating are guaranteed to have primary keys
-    pk_expr.expect("Table has no primary key columns")
+    pk_expr.ok_or(etl_error!(
+        ErrorKind::ConversionError,
+        "Table has no primary key columns"
+    ))
+}
+
+/// Convert a Postgres [`PgCell`] into a DataFusion [`Expr`] literal.
+fn cell_to_scalar_expr(cell: &PgCell, column_schema: &PgColumnSchema) -> EtlResult<Expr> {
+    let single_col_schema = PgTableSchema {
+        id: TableId::new(0),
+        name: TableName::new("foo".to_string(), "bar".to_string()),
+        column_schemas: vec![column_schema.clone()],
+    };
+
+    let arrow_schema = postgres_to_arrow_schema(&single_col_schema).map_err(|e| {
+        etl_error!(
+            ErrorKind::ConversionError,
+            "Failed to convert table schema to Arrow schema",
+            e
+        )
+    })?;
+    let temp_row = vec![PgTableRow::new(vec![cell.clone()])];
+    let array = rows_to_record_batch(&temp_row, arrow_schema).map_err(|e| {
+        etl_error!(
+            ErrorKind::ConversionError,
+            "Failed to convert row to Arrow array",
+            e
+        )
+    })?;
+    let array = array.column(0);
+    let scalar_value = ScalarValue::try_from_array(array, 0).map_err(|e| {
+        etl_error!(
+            ErrorKind::ConversionError,
+            "Failed to convert cell to scalar expression",
+            e
+        )
+    })?;
+    Ok(lit(scalar_value))
 }
 
 /// Turns a set of primary key column expressions into qualified equality expressions
@@ -79,9 +110,10 @@ pub fn qualify_primary_keys(
 mod tests {
     use super::*;
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-    use deltalake::datafusion::logical_expr::Operator::{And, Eq};
     use deltalake::datafusion::logical_expr::{col, lit};
     use etl::types::{ColumnSchema as PgColumnSchema, TableName, Type as PgType};
+    use insta::assert_debug_snapshot;
+
     /// Create a test table schema with various column types.
     fn create_test_schema() -> PgTableSchema {
         PgTableSchema {
@@ -140,29 +172,25 @@ mod tests {
         let schema = create_test_schema();
         let row = create_test_row();
 
-        let pk_expr = build_pk_expr(&schema, &row);
+        let pk_expr = build_pk_expr(&schema, &row).unwrap();
 
-        // The expression should be an equality comparison
-        match pk_expr {
-            Expr::BinaryExpr(binary_expr) => {
-                assert!(matches!(binary_expr.op, Eq));
-
-                // Left side should be a column reference
-                match &*binary_expr.left {
-                    Expr::Column(column) => {
-                        assert_eq!(column.name, "id");
-                    }
-                    _ => panic!("Expected column reference on left side"),
-                }
-
-                // Right side should be a literal
-                match &*binary_expr.right {
-                    Expr::Literal(_, _) => {}
-                    _ => panic!("Expected literal on right side"),
-                }
-            }
-            _ => panic!("Expected binary expression for single primary key"),
-        }
+        assert_debug_snapshot!(pk_expr, @r#"
+        BinaryExpr(
+            BinaryExpr {
+                left: Column(
+                    Column {
+                        relation: None,
+                        name: "id",
+                    },
+                ),
+                op: Eq,
+                right: Literal(
+                    Int64(12345),
+                    None,
+                ),
+            },
+        )
+        "#);
     }
 
     #[test]
@@ -170,24 +198,45 @@ mod tests {
         let schema = create_composite_pk_schema();
         let row = create_composite_pk_row();
 
-        let pk_expr = build_pk_expr(&schema, &row);
+        let pk_expr = build_pk_expr(&schema, &row).unwrap();
 
-        // The expression should be an AND of two equality comparisons
-        match pk_expr {
-            Expr::BinaryExpr(binary_expr) => {
-                assert!(matches!(binary_expr.op, And));
-
-                // Both sides should be equality expressions
-                match (&*binary_expr.left, &*binary_expr.right) {
-                    (Expr::BinaryExpr(left_eq), Expr::BinaryExpr(right_eq)) => {
-                        assert!(matches!(left_eq.op, Eq));
-                        assert!(matches!(right_eq.op, Eq));
-                    }
-                    _ => panic!("Expected equality expressions on both sides of AND"),
-                }
-            }
-            _ => panic!("Expected AND expression for composite primary key"),
-        }
+        assert_debug_snapshot!(pk_expr, @r#"
+        BinaryExpr(
+            BinaryExpr {
+                left: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: None,
+                                name: "tenant_id",
+                            },
+                        ),
+                        op: Eq,
+                        right: Literal(
+                            Int32(1),
+                            None,
+                        ),
+                    },
+                ),
+                op: And,
+                right: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: None,
+                                name: "user_id",
+                            },
+                        ),
+                        op: Eq,
+                        right: Literal(
+                            Int64(42),
+                            None,
+                        ),
+                    },
+                ),
+            },
+        )
+        "#);
     }
 
     #[test]
@@ -203,8 +252,7 @@ mod tests {
         };
         let row = PgTableRow::new(vec![PgCell::String("test".to_string()), PgCell::I32(42)]);
 
-        // This should panic as stated in the function documentation
-        let result = std::panic::catch_unwind(|| build_pk_expr(&schema, &row));
+        let result = build_pk_expr(&schema, &row);
         assert!(result.is_err());
     }
 
@@ -222,16 +270,8 @@ mod tests {
             )),
         ]);
 
-        // This should still work - the conversion should handle null values
         let pk_expr = build_pk_expr(&schema, &row_with_null_pk);
-
-        // Verify it's still an equality expression
-        match pk_expr {
-            Expr::BinaryExpr(binary_expr) => {
-                assert!(matches!(binary_expr.op, Eq));
-            }
-            _ => panic!("Expected binary expression even with null primary key"),
-        }
+        assert!(pk_expr.is_err());
     }
 
     #[test]
@@ -239,34 +279,45 @@ mod tests {
         let schema = create_composite_pk_schema();
         let row = create_composite_pk_row();
 
-        let pk_expr = build_pk_expr(&schema, &row);
+        let pk_expr = build_pk_expr(&schema, &row).unwrap();
 
-        // Helper function to verify expression structure recursively
-        fn verify_pk_expression(expr: &Expr, expected_columns: &[&str]) -> bool {
-            match expr {
-                Expr::BinaryExpr(binary_expr) => {
-                    match binary_expr.op {
-                        Eq => {
-                            // This should be a leaf equality expression
-                            if let Expr::Column(column) = &*binary_expr.left {
-                                expected_columns.contains(&column.name.as_str())
-                            } else {
-                                false
-                            }
-                        }
-                        And => {
-                            // This should be an AND of other expressions
-                            verify_pk_expression(&binary_expr.left, expected_columns)
-                                && verify_pk_expression(&binary_expr.right, expected_columns)
-                        }
-                        _ => false,
-                    }
-                }
-                _ => false,
-            }
-        }
-
-        assert!(verify_pk_expression(&pk_expr, &["tenant_id", "user_id"]));
+        assert_debug_snapshot!(pk_expr, @r#"
+        BinaryExpr(
+            BinaryExpr {
+                left: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: None,
+                                name: "tenant_id",
+                            },
+                        ),
+                        op: Eq,
+                        right: Literal(
+                            Int32(1),
+                            None,
+                        ),
+                    },
+                ),
+                op: And,
+                right: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: None,
+                                name: "user_id",
+                            },
+                        ),
+                        op: Eq,
+                        right: Literal(
+                            Int64(42),
+                            None,
+                        ),
+                    },
+                ),
+            },
+        )
+        "#);
     }
 
     #[test]
@@ -276,31 +327,35 @@ mod tests {
         let primary_keys = vec![col("id")];
         let result = qualify_primary_keys(primary_keys, "source", "target");
 
-        // Should create: source.id = target.id
-        match result {
-            Some(Expr::BinaryExpr(binary_expr)) => {
-                assert!(matches!(binary_expr.op, Eq));
-
-                // Left side should be source.id
-                match &*binary_expr.left {
-                    Expr::Column(column) => {
-                        assert_eq!(column.relation, Some("source".into()));
-                        assert_eq!(column.name, "id");
-                    }
-                    _ => panic!("Expected qualified source column on left side"),
-                }
-
-                // Right side should be target.id
-                match &*binary_expr.right {
-                    Expr::Column(column) => {
-                        assert_eq!(column.relation, Some("target".into()));
-                        assert_eq!(column.name, "id");
-                    }
-                    _ => panic!("Expected qualified target column on right side"),
-                }
-            }
-            _ => panic!("Expected binary expression for single primary key"),
-        }
+        assert_debug_snapshot!(result, @r#"
+        Some(
+            BinaryExpr(
+                BinaryExpr {
+                    left: Column(
+                        Column {
+                            relation: Some(
+                                Bare {
+                                    table: "source",
+                                },
+                            ),
+                            name: "id",
+                        },
+                    ),
+                    op: Eq,
+                    right: Column(
+                        Column {
+                            relation: Some(
+                                Bare {
+                                    table: "target",
+                                },
+                            ),
+                            name: "id",
+                        },
+                    ),
+                },
+            ),
+        )
+        "#);
     }
 
     #[test]
@@ -308,99 +363,159 @@ mod tests {
         let primary_keys = vec![col("tenant_id"), col("user_id")];
         let result = qualify_primary_keys(primary_keys, "src", "tgt");
 
-        // Should create: src.tenant_id = tgt.tenant_id AND src.user_id = tgt.user_id
-        match result {
-            Some(Expr::BinaryExpr(binary_expr)) => {
-                assert!(matches!(binary_expr.op, And));
-
-                // Both sides should be equality expressions
-                match (&*binary_expr.left, &*binary_expr.right) {
-                    (Expr::BinaryExpr(left_eq), Expr::BinaryExpr(right_eq)) => {
-                        assert!(matches!(left_eq.op, Eq));
-                        assert!(matches!(right_eq.op, Eq));
-
-                        // Verify left equality (first primary key)
-                        match (&*left_eq.left, &*left_eq.right) {
-                            (Expr::Column(src_col), Expr::Column(tgt_col)) => {
-                                assert_eq!(src_col.relation, Some("src".into()));
-                                assert_eq!(src_col.name, "tenant_id");
-                                assert_eq!(tgt_col.relation, Some("tgt".into()));
-                                assert_eq!(tgt_col.name, "tenant_id");
-                            }
-                            _ => panic!("Expected qualified columns in first equality"),
-                        }
-
-                        // Verify right equality (second primary key)
-                        match (&*right_eq.left, &*right_eq.right) {
-                            (Expr::Column(src_col), Expr::Column(tgt_col)) => {
-                                assert_eq!(src_col.relation, Some("src".into()));
-                                assert_eq!(src_col.name, "user_id");
-                                assert_eq!(tgt_col.relation, Some("tgt".into()));
-                                assert_eq!(tgt_col.name, "user_id");
-                            }
-                            _ => panic!("Expected qualified columns in second equality"),
-                        }
-                    }
-                    _ => panic!("Expected equality expressions on both sides of AND"),
-                }
-            }
-            _ => panic!("Expected AND expression for composite primary key"),
-        }
+        assert_debug_snapshot!(result, @r#"
+        Some(
+            BinaryExpr(
+                BinaryExpr {
+                    left: BinaryExpr(
+                        BinaryExpr {
+                            left: Column(
+                                Column {
+                                    relation: Some(
+                                        Bare {
+                                            table: "src",
+                                        },
+                                    ),
+                                    name: "tenant_id",
+                                },
+                            ),
+                            op: Eq,
+                            right: Column(
+                                Column {
+                                    relation: Some(
+                                        Bare {
+                                            table: "tgt",
+                                        },
+                                    ),
+                                    name: "tenant_id",
+                                },
+                            ),
+                        },
+                    ),
+                    op: And,
+                    right: BinaryExpr(
+                        BinaryExpr {
+                            left: Column(
+                                Column {
+                                    relation: Some(
+                                        Bare {
+                                            table: "src",
+                                        },
+                                    ),
+                                    name: "user_id",
+                                },
+                            ),
+                            op: Eq,
+                            right: Column(
+                                Column {
+                                    relation: Some(
+                                        Bare {
+                                            table: "tgt",
+                                        },
+                                    ),
+                                    name: "user_id",
+                                },
+                            ),
+                        },
+                    ),
+                },
+            ),
+        )
+        "#);
     }
 
     #[test]
     fn test_qualify_primary_keys_multiple_columns() {
         let primary_keys = vec![col("a"), col("b"), col("c")];
-        let result = qualify_primary_keys(primary_keys, "s", "t");
+        let result = qualify_primary_keys(primary_keys, "s", "t").unwrap();
 
-        fn verify_qualified_expression(
-            expr: &Expr,
-            expected_columns: &[&str],
-            source: &str,
-            target: &str,
-        ) -> bool {
-            match expr {
-                Expr::BinaryExpr(binary_expr) => {
-                    match binary_expr.op {
-                        Eq => {
-                            // This should be a leaf equality expression
-                            match (&*binary_expr.left, &*binary_expr.right) {
-                                (Expr::Column(src_col), Expr::Column(tgt_col)) => {
-                                    src_col.relation == Some(source.into())
-                                        && tgt_col.relation == Some(target.into())
-                                        && src_col.name == tgt_col.name
-                                        && expected_columns.contains(&src_col.name.as_str())
-                                }
-                                _ => false,
-                            }
-                        }
-                        And => {
-                            // This should be an AND of other expressions
-                            verify_qualified_expression(
-                                &binary_expr.left,
-                                expected_columns,
-                                source,
-                                target,
-                            ) && verify_qualified_expression(
-                                &binary_expr.right,
-                                expected_columns,
-                                source,
-                                target,
-                            )
-                        }
-                        _ => false,
-                    }
-                }
-                _ => false,
-            }
-        }
-
-        assert!(verify_qualified_expression(
-            &result.unwrap(),
-            &["a", "b", "c"],
-            "s",
-            "t"
-        ));
+        assert_debug_snapshot!(result, @r#"
+        BinaryExpr(
+            BinaryExpr {
+                left: BinaryExpr(
+                    BinaryExpr {
+                        left: BinaryExpr(
+                            BinaryExpr {
+                                left: Column(
+                                    Column {
+                                        relation: Some(
+                                            Bare {
+                                                table: "s",
+                                            },
+                                        ),
+                                        name: "a",
+                                    },
+                                ),
+                                op: Eq,
+                                right: Column(
+                                    Column {
+                                        relation: Some(
+                                            Bare {
+                                                table: "t",
+                                            },
+                                        ),
+                                        name: "a",
+                                    },
+                                ),
+                            },
+                        ),
+                        op: And,
+                        right: BinaryExpr(
+                            BinaryExpr {
+                                left: Column(
+                                    Column {
+                                        relation: Some(
+                                            Bare {
+                                                table: "s",
+                                            },
+                                        ),
+                                        name: "b",
+                                    },
+                                ),
+                                op: Eq,
+                                right: Column(
+                                    Column {
+                                        relation: Some(
+                                            Bare {
+                                                table: "t",
+                                            },
+                                        ),
+                                        name: "b",
+                                    },
+                                ),
+                            },
+                        ),
+                    },
+                ),
+                op: And,
+                right: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "s",
+                                    },
+                                ),
+                                name: "c",
+                            },
+                        ),
+                        op: Eq,
+                        right: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "t",
+                                    },
+                                ),
+                                name: "c",
+                            },
+                        ),
+                    },
+                ),
+            },
+        )
+        "#);
     }
 
     #[test]
@@ -409,25 +524,6 @@ mod tests {
 
         let res = qualify_primary_keys(primary_keys, "source", "target");
         assert!(res.is_none());
-    }
-
-    #[test]
-    fn test_qualify_primary_keys_different_aliases() {
-        let primary_keys = vec![col("key")];
-        let result = qualify_primary_keys(primary_keys, "new_records", "existing_table");
-
-        match result.unwrap() {
-            Expr::BinaryExpr(binary_expr) => match (&*binary_expr.left, &*binary_expr.right) {
-                (Expr::Column(src_col), Expr::Column(tgt_col)) => {
-                    assert_eq!(src_col.relation, Some("new_records".into()));
-                    assert_eq!(src_col.name, "key");
-                    assert_eq!(tgt_col.relation, Some("existing_table".into()));
-                    assert_eq!(tgt_col.name, "key");
-                }
-                _ => panic!("Expected qualified columns"),
-            },
-            _ => panic!("Expected binary expression"),
-        }
     }
 
     #[test]

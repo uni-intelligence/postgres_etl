@@ -24,7 +24,7 @@ pub fn materialize_events_append_only<'a>(
         match event {
             Event::Insert(e) => {
                 let marker = (e.commit_lsn, e.start_lsn);
-                let pk_expr = build_pk_expr(table_schema, &e.table_row);
+                let pk_expr = build_pk_expr(table_schema, &e.table_row)?;
                 let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
                     val: RowOp::Upsert(&e.table_row),
                     marker,
@@ -68,7 +68,7 @@ pub fn materialize_events<'a>(
         match event {
             Event::Insert(e) => {
                 let marker = (e.commit_lsn, e.start_lsn);
-                let pk_expr = build_pk_expr(table_schema, &e.table_row);
+                let pk_expr = build_pk_expr(table_schema, &e.table_row)?;
                 let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
                     val: RowOp::Upsert(&e.table_row),
                     marker,
@@ -77,7 +77,7 @@ pub fn materialize_events<'a>(
             }
             Event::Update(e) => {
                 let marker = (e.commit_lsn, e.start_lsn);
-                let pk_expr = build_pk_expr(table_schema, &e.table_row);
+                let pk_expr = build_pk_expr(table_schema, &e.table_row)?;
                 let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
                     val: RowOp::Upsert(&e.table_row),
                     marker,
@@ -87,7 +87,7 @@ pub fn materialize_events<'a>(
             Event::Delete(e) => {
                 if let Some((_, ref old_row)) = e.old_table_row {
                     let marker = (e.commit_lsn, e.start_lsn);
-                    let pk_expr = build_pk_expr(table_schema, old_row);
+                    let pk_expr = build_pk_expr(table_schema, old_row)?;
                     let entry = crdt_by_key.entry(pk_expr).or_insert_with(|| LWWReg {
                         val: RowOp::Delete,
                         marker,
@@ -127,6 +127,7 @@ mod tests {
         Cell as PgCell, ColumnSchema as PgColumnSchema, DeleteEvent, InsertEvent, TableId,
         TableName, Type as PgType, UpdateEvent,
     };
+    use insta::assert_debug_snapshot;
 
     fn schema_single_pk(table_id: TableId) -> PgTableSchema {
         PgTableSchema::new(
@@ -221,8 +222,20 @@ mod tests {
 
         let (deletes, upserts) = materialize_events(&events, &schema).unwrap();
         assert!(deletes.is_empty());
-        assert_eq!(upserts.len(), 1);
-        assert_eq!(upserts[0].values[1], PgCell::String("b".to_string()));
+        assert_debug_snapshot!(upserts, @r#"
+        [
+            TableRow {
+                values: [
+                    I64(
+                        1,
+                    ),
+                    String(
+                        "b",
+                    ),
+                ],
+            },
+        ]
+        "#);
     }
 
     #[test]
@@ -246,8 +259,26 @@ mod tests {
         let events = vec![ins, del];
 
         let (deletes, upserts) = materialize_events(&events, &schema).unwrap();
+        assert_debug_snapshot!(deletes, @r#"
+        [
+            BinaryExpr(
+                BinaryExpr {
+                    left: Column(
+                        Column {
+                            relation: None,
+                            name: "id",
+                        },
+                    ),
+                    op: Eq,
+                    right: Literal(
+                        Int64(1),
+                        None,
+                    ),
+                },
+            ),
+        ]
+        "#);
         assert!(upserts.is_empty());
-        assert_eq!(deletes.len(), 1);
     }
 
     #[test]
@@ -271,8 +302,20 @@ mod tests {
         let events = vec![ins, upd];
 
         let upserts = materialize_events_append_only(&events, &schema).unwrap();
-        assert_eq!(upserts.len(), 1);
-        assert_eq!(upserts[0].values[1], PgCell::String("a".to_string()));
+        assert_debug_snapshot!(upserts, @r#"
+        [
+            TableRow {
+                values: [
+                    I64(
+                        1,
+                    ),
+                    String(
+                        "a",
+                    ),
+                ],
+            },
+        ]
+        "#);
     }
 
     #[test]
@@ -317,8 +360,61 @@ mod tests {
 
         // We expect one delete predicate (for tenant_id=10 AND user_id=101)
         // and one upsert (tenant_id=10 AND user_id=100 with name=a2)
-        assert_eq!(deletes.len(), 1);
-        assert_eq!(upserts.len(), 1);
-        assert_eq!(upserts[0].values[2], PgCell::String("a2".to_string()));
+        assert_debug_snapshot!(deletes, @r#"
+        [
+            BinaryExpr(
+                BinaryExpr {
+                    left: BinaryExpr(
+                        BinaryExpr {
+                            left: Column(
+                                Column {
+                                    relation: None,
+                                    name: "tenant_id",
+                                },
+                            ),
+                            op: Eq,
+                            right: Literal(
+                                Int32(10),
+                                None,
+                            ),
+                        },
+                    ),
+                    op: And,
+                    right: BinaryExpr(
+                        BinaryExpr {
+                            left: Column(
+                                Column {
+                                    relation: None,
+                                    name: "user_id",
+                                },
+                            ),
+                            op: Eq,
+                            right: Literal(
+                                Int64(101),
+                                None,
+                            ),
+                        },
+                    ),
+                },
+            ),
+        ]
+        "#);
+        assert_debug_snapshot!(upserts, @r#"
+        [
+            TableRow {
+                values: [
+                    I32(
+                        10,
+                    ),
+                    I64(
+                        100,
+                    ),
+                    String(
+                        "a2",
+                    ),
+                ],
+            },
+        ]
+        "#);
     }
 }

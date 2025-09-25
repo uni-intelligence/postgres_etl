@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use arrow::array::RecordBatch;
+use arrow_55::array::RecordBatch;
 use etl::{
     error::EtlResult,
     types::{TableRow, TableSchema},

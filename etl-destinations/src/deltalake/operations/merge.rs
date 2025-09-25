@@ -5,17 +5,20 @@ use deltalake::operations::merge::MergeBuilder;
 use deltalake::{DeltaResult, DeltaTable, datafusion::prelude::Expr};
 use etl::types::{TableRow as PgTableRow, TableSchema as PgTableSchema};
 
+use crate::arrow::rows_to_record_batch;
 use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::expr::qualify_primary_keys;
+use crate::deltalake::schema::postgres_to_arrow_schema;
 
 pub async fn merge_to_table(
     table: &mut DeltaTable,
     config: &DeltaTableConfig,
     table_schema: &PgTableSchema,
-    upsert_rows: Vec<&PgTableRow>,
+    upsert_rows: &[PgTableRow],
     delete_predicate: Option<Expr>,
 ) -> DeltaResult<()> {
-    let rows = TableRowEncoder::encode_table_rows(table_schema, upsert_rows)?;
+    let arrow_schema = postgres_to_arrow_schema(table_schema)?;
+    let rows = rows_to_record_batch(upsert_rows, arrow_schema)?;
 
     let ctx = SessionContext::new();
     let batch = ctx.read_batch(rows)?;

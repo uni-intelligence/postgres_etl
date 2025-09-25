@@ -7,15 +7,13 @@ use arrow::{
         TimestampMicrosecondBuilder,
     },
     datatypes::{
-        DataType, Date32Type, FieldRef, Float32Type, Float64Type, Int16Type, Int32Type,
-        Int64Type, Schema, Time64MicrosecondType, TimeUnit, TimestampMicrosecondType, UInt32Type,
+        DataType, Date32Type, FieldRef, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
+        Schema, Time64MicrosecondType, TimeUnit, TimestampMicrosecondType, UInt32Type,
     },
     error::ArrowError,
 };
 use chrono::{NaiveDate, NaiveTime};
-use etl::types::{
-    ArrayCell, Cell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TableRow,
-};
+use etl::types::{ArrayCell, Cell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TableRow};
 
 pub const UNIX_EPOCH: NaiveDate =
     NaiveDate::from_ymd_opt(1970, 1, 1).expect("unix epoch is a valid date");
