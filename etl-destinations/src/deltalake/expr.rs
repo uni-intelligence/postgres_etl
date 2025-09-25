@@ -529,4 +529,71 @@ mod tests {
         let res = qualify_primary_keys(primary_keys, "source", "target");
         assert!(res.is_none());
     }
+
+    #[test]
+    fn test_qualify_primary_keys_case_sensitivity() {
+        let primary_keys = vec![
+            Expr::Column(Column::new_unqualified("id")),
+            Expr::Column(Column::new_unqualified("NAME")),
+        ];
+        let result = qualify_primary_keys(primary_keys, "source", "target").unwrap();
+
+        assert_debug_snapshot!(result, @r#"
+        BinaryExpr(
+            BinaryExpr {
+                left: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "source",
+                                    },
+                                ),
+                                name: "id",
+                            },
+                        ),
+                        op: Eq,
+                        right: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "target",
+                                    },
+                                ),
+                                name: "id",
+                            },
+                        ),
+                    },
+                ),
+                op: And,
+                right: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "source",
+                                    },
+                                ),
+                                name: "NAME",
+                            },
+                        ),
+                        op: Eq,
+                        right: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "target",
+                                    },
+                                ),
+                                name: "NAME",
+                            },
+                        ),
+                    },
+                ),
+            },
+        )
+        "#);
+    }
 }

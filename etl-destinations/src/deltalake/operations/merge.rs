@@ -1,6 +1,6 @@
 use deltalake::DeltaTableError;
 use deltalake::datafusion::common::Column;
-use deltalake::datafusion::prelude::{SessionContext, col};
+use deltalake::datafusion::prelude::SessionContext;
 use deltalake::operations::merge::MergeBuilder;
 use deltalake::{DeltaResult, DeltaTable, datafusion::prelude::Expr};
 use etl::types::{TableRow as PgTableRow, TableSchema as PgTableSchema};
@@ -9,6 +9,10 @@ use crate::arrow::rows_to_record_batch;
 use crate::deltalake::config::DeltaTableConfig;
 use crate::deltalake::expr::qualify_primary_keys;
 use crate::deltalake::schema::postgres_to_arrow_schema;
+
+pub(crate) fn source_qualified_column_expr(column_name: &str, source_alias: &str) -> Expr {
+    Expr::Column(Column::new(Some(source_alias), column_name))
+}
 
 pub async fn merge_to_table(
     table: &mut DeltaTable,
@@ -55,12 +59,18 @@ pub async fn merge_to_table(
         .with_target_alias("target")
         .when_not_matched_insert(|insert| {
             all_columns.iter().fold(insert, |insert, &column| {
-                insert.set(column.to_string(), col(format!("source.{column}")))
+                insert.set(
+                    column.to_string(),
+                    source_qualified_column_expr(column, "source"),
+                )
             })
         })?
         .when_matched_update(|update| {
             all_columns.iter().fold(update, |update, &column| {
-                update.update(column.to_string(), col(format!("source.{column}")))
+                update.update(
+                    column.to_string(),
+                    source_qualified_column_expr(column, "source"),
+                )
             })
         })?;
 
@@ -72,4 +82,46 @@ pub async fn merge_to_table(
     let (merged_table, _metrics) = merge_builder.await?;
     *table = merged_table;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use insta::assert_debug_snapshot;
+
+    #[test]
+    fn source_qualified_column_expr_preserves_case_and_alias() {
+        let expr = source_qualified_column_expr("CASESensitivecolumn", "source");
+
+        assert_debug_snapshot!(expr, @r#"
+        Column(
+            Column {
+                relation: Some(
+                    Bare {
+                        table: "source",
+                    },
+                ),
+                name: "CASESensitivecolumn",
+            },
+        )
+        "#);
+    }
+
+    #[test]
+    fn source_qualified_column_expr_handles_lowercase() {
+        let expr = source_qualified_column_expr("lowercasecolumn", "source");
+
+        assert_debug_snapshot!(expr, @r#"
+        Column(
+            Column {
+                relation: Some(
+                    Bare {
+                        table: "source",
+                    },
+                ),
+                name: "lowercasecolumn",
+            },
+        )
+        "#);
+    }
 }
