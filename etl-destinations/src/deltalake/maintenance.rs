@@ -4,7 +4,7 @@ use std::sync::Arc;
 use deltalake::DeltaTable;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{error, trace};
+use tracing::{debug, error, instrument, trace};
 
 use etl::types::TableId;
 
@@ -38,6 +38,7 @@ impl TableMaintenanceState {
 
     /// Await any in-flight compaction, then if the `compact_after_commits` threshold is met,
     /// run compaction. This guarantees serialization of compaction runs relative to table writes.
+    #[instrument(skip(self, table, config), fields(table_id = table_id.0, table_version))]
     pub async fn maybe_run_compaction(
         self: &Arc<Self>,
         table_id: TableId,
@@ -69,6 +70,11 @@ impl TableMaintenanceState {
         };
 
         if !should_compact {
+            debug!(
+                table_id = table_id.0,
+                version = table_version,
+                "Skipping Delta table compaction task"
+            );
             return;
         }
 
@@ -103,6 +109,7 @@ impl TableMaintenanceState {
 
     /// Await any in-flight Z-ordering, then if the `z_order_after_commits` threshold is met,
     /// run Z-order. Serializes Z-order runs relative to table writes.
+    #[instrument(skip(self, table, config), fields(table_id = table_id.0, table_version))]
     pub async fn maybe_run_zorder(
         self: &Arc<Self>,
         table_id: TableId,
@@ -140,6 +147,11 @@ impl TableMaintenanceState {
         };
 
         if !should_zorder {
+            debug!(
+                table_id = table_id.0,
+                version = table_version,
+                "Skipping Delta table Z-order task"
+            );
             return;
         }
 
