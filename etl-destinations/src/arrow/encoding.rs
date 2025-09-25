@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use arrow::{
     array::{
-        ArrayRef, ArrowPrimitiveType, BooleanBuilder, Decimal128Array, FixedSizeBinaryBuilder,
-        LargeBinaryBuilder, ListBuilder, PrimitiveBuilder, RecordBatch, StringBuilder,
-        TimestampMicrosecondBuilder,
+        ArrayRef, ArrowPrimitiveType, BinaryBuilder, BooleanBuilder, Decimal128Array,
+        Decimal128Builder, FixedSizeBinaryBuilder, LargeBinaryBuilder, ListBuilder,
+        PrimitiveBuilder, RecordBatch, StringBuilder, TimestampMicrosecondBuilder,
     },
     datatypes::{
         DataType, Date32Type, FieldRef, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
@@ -13,7 +13,10 @@ use arrow::{
     error::ArrowError,
 };
 use chrono::{NaiveDate, NaiveTime};
-use etl::types::{ArrayCell, Cell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TableRow};
+use etl::{
+    conversions::numeric::Sign,
+    types::{ArrayCell, Cell, DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT, TableRow},
+};
 
 pub const UNIX_EPOCH: NaiveDate =
     NaiveDate::from_ymd_opt(1970, 1, 1).expect("unix epoch is a valid date");
@@ -81,15 +84,13 @@ pub fn rows_to_record_batch(rows: &[TableRow], schema: Schema) -> Result<RecordB
 fn build_array_for_field(rows: &[TableRow], field_idx: usize, data_type: &DataType) -> ArrayRef {
     match data_type {
         DataType::Boolean => build_boolean_array(rows, field_idx),
-        DataType::Int16 => build_primitive_array::<Int16Type, _>(rows, field_idx, cell_to_i16),
         DataType::Int32 => build_primitive_array::<Int32Type, _>(rows, field_idx, cell_to_i32),
         DataType::Int64 => build_primitive_array::<Int64Type, _>(rows, field_idx, cell_to_i64),
-        DataType::UInt32 => build_primitive_array::<UInt32Type, _>(rows, field_idx, cell_to_u32),
         DataType::Float32 => build_primitive_array::<Float32Type, _>(rows, field_idx, cell_to_f32),
         DataType::Float64 => build_primitive_array::<Float64Type, _>(rows, field_idx, cell_to_f64),
         DataType::Utf8 => build_string_array(rows, field_idx),
         DataType::Binary => build_binary_array(rows, field_idx),
-        DataType::LargeBinary => build_binary_array(rows, field_idx),
+        DataType::LargeBinary => build_large_binary_array(rows, field_idx),
         DataType::Date32 => build_primitive_array::<Date32Type, _>(rows, field_idx, cell_to_date32),
         DataType::Time64(TimeUnit::Microsecond) => {
             build_primitive_array::<Time64MicrosecondType, _>(rows, field_idx, cell_to_time64)
@@ -155,7 +156,8 @@ macro_rules! impl_array_builder {
 
 impl_array_builder!(build_boolean_array, BooleanBuilder, cell_to_bool);
 impl_array_builder!(build_string_array, StringBuilder, cell_to_string);
-impl_array_builder!(build_binary_array, LargeBinaryBuilder, cell_to_bytes);
+impl_array_builder!(build_binary_array, BinaryBuilder, cell_to_bytes);
+impl_array_builder!(build_large_binary_array, LargeBinaryBuilder, cell_to_bytes);
 
 /// Builds a decimal128 array from [`TableRow`]s for a specific field.
 fn build_decimal128_array(
@@ -263,22 +265,6 @@ fn cell_to_i64(cell: &Cell) -> Option<i64> {
     }
 }
 
-/// Converts a [`Cell`] to a 16-bit signed integer.
-fn cell_to_i16(cell: &Cell) -> Option<i16> {
-    match cell {
-        Cell::I16(v) => Some(*v),
-        _ => None,
-    }
-}
-
-/// Converts a [`Cell`] to a 32-bit unsigned integer.
-fn cell_to_u32(cell: &Cell) -> Option<u32> {
-    match cell {
-        Cell::U32(v) => Some(*v),
-        _ => None,
-    }
-}
-
 /// Converts a [`Cell`] to a 32-bit floating-point number.
 ///
 /// Extracts 32-bit float values from [`Cell::F32`] variants, returning
@@ -302,19 +288,97 @@ fn cell_to_f64(cell: &Cell) -> Option<f64> {
 }
 
 /// Converts a [`Cell`] to a decimal128 value.
-fn cell_to_decimal128(cell: &Cell, _precision: u8, scale: i8) -> Option<i128> {
+fn cell_to_decimal128(cell: &Cell, precision: u8, scale: i8) -> Option<i128> {
     match cell {
-        Cell::Numeric(n) => {
-            // This is a simplified conversion - ideally we'd preserve the exact decimal representation
-            if let Ok(string_val) = n.to_string().parse::<f64>() {
-                // Scale up by the scale factor and convert to i128
-                let scaled = (string_val * 10_f64.powi(scale as i32)) as i128;
-                Some(scaled)
-            } else {
-                None
-            }
-        }
+        Cell::Numeric(n) => pg_numeric_to_decimal_i128(n, precision as i32, scale as i32),
         _ => None,
+    }
+}
+
+/// Convert PgNumeric to a scaled i128 matching Decimal128(precision, scale) exactly using string math.
+fn pg_numeric_to_decimal_i128(
+    n: &etl::types::PgNumeric,
+    precision: i32,
+    scale: i32,
+) -> Option<i128> {
+    if precision <= 0 || scale < 0 || scale > precision {
+        return None;
+    }
+
+    match n {
+        etl::types::PgNumeric::NaN
+        | etl::types::PgNumeric::PositiveInfinity
+        | etl::types::PgNumeric::NegativeInfinity => None,
+        etl::types::PgNumeric::Value {
+            sign,
+            weight,
+            scale: _,
+            digits,
+        } => {
+            if digits.is_empty() {
+                return Some(0);
+            }
+
+            // Compose base-10000 groups into an integer accumulator.
+            let mut acc: i128 = 0;
+            for &g in digits.iter() {
+                let gi = g as i128;
+                acc = acc.checked_mul(10_000)?.checked_add(gi)?;
+            }
+
+            // Decimal 10^ exponent to align composed base-10000 integer with actual value,
+            // then apply desired target scale. Do NOT use pg_scale here; value is fully
+            // described by digits and weight.
+            let shift_groups = *weight as i32 - (digits.len() as i32 - 1);
+            let exp10 = shift_groups * 4 + scale;
+
+            // Apply 10^exp10 scaling with checked math.
+            fn pow10_i128(mut e: i32) -> Option<i128> {
+                if e < 0 {
+                    return None;
+                }
+                let mut r: i128 = 1;
+                while e > 0 {
+                    r = r.checked_mul(10)?;
+                    e -= 1;
+                }
+                Some(r)
+            }
+
+            if exp10 >= 0 {
+                acc = acc.checked_mul(pow10_i128(exp10)?)?;
+            } else {
+                let div = pow10_i128(-exp10)?;
+                acc /= div; // truncate toward zero
+            }
+
+            // Apply sign
+            let is_negative = matches!(sign, Sign::Negative);
+            if is_negative {
+                acc = -acc;
+            }
+
+            // Enforce precision limit
+            fn count_digits(mut v: i128) -> i32 {
+                if v == 0 {
+                    return 1;
+                }
+                if v < 0 {
+                    v = -v;
+                }
+                let mut c = 0;
+                while v > 0 {
+                    v /= 10;
+                    c += 1;
+                }
+                c
+            }
+            if count_digits(acc) > precision {
+                return None;
+            }
+
+            Some(acc)
+        }
     }
 }
 
@@ -910,12 +974,39 @@ fn build_decimal128_list_array(
     rows: &[TableRow],
     field_idx: usize,
     field: FieldRef,
-    _precision: u8,
-    _scale: i8,
+    precision: u8,
+    scale: i8,
 ) -> ArrayRef {
-    // For now, fall back to string representation for decimal arrays
-    // This is a simplified implementation that avoids complex Arrow data type manipulation
-    build_list_array_for_strings(rows, field_idx, field)
+    let mut list_builder = ListBuilder::new(
+        Decimal128Builder::new().with_data_type(DataType::Decimal128(precision, scale)),
+    )
+    .with_field(field.clone());
+
+    for row in rows {
+        if let Some(array_cell) = cell_to_array_cell(&row.values[field_idx]) {
+            match array_cell {
+                ArrayCell::Numeric(vec) => {
+                    for item in vec {
+                        let val = item.as_ref().and_then(|n| {
+                            pg_numeric_to_decimal_i128(n, precision as i32, scale as i32)
+                        });
+                        match val {
+                            Some(v) => list_builder.values().append_value(v),
+                            None => list_builder.values().append_null(),
+                        }
+                    }
+                    list_builder.append(true);
+                }
+                _ => {
+                    return build_list_array_for_strings(rows, field_idx, field);
+                }
+            }
+        } else {
+            list_builder.append_null();
+        }
+    }
+
+    Arc::new(list_builder.finish())
 }
 
 /// Builds a list array for string elements.
@@ -1486,17 +1577,47 @@ mod tests {
             },
         ];
 
-        let array_ref = build_array_for_field(&rows, 0, &DataType::LargeBinary);
+        let array_ref = build_array_for_field(&rows, 0, &DataType::Binary);
         let binary_array = array_ref
             .as_any()
-            .downcast_ref::<arrow::array::LargeBinaryArray>()
+            .downcast_ref::<arrow::array::BinaryArray>()
             .unwrap();
-
         assert_eq!(binary_array.len(), 4);
         assert_eq!(binary_array.value(0), test_bytes);
         assert_eq!(binary_array.value(1), Vec::<u8>::new());
         assert!(binary_array.is_null(2));
         assert!(binary_array.is_null(3));
+    }
+
+    #[test]
+    fn test_build_large_binary_array() {
+        let test_bytes = vec![1, 2, 3, 4, 5];
+        let rows = vec![
+            TableRow {
+                values: vec![Cell::Bytes(test_bytes.clone())],
+            },
+            TableRow {
+                values: vec![Cell::Bytes(vec![])],
+            },
+            TableRow {
+                values: vec![Cell::Null],
+            },
+            TableRow {
+                values: vec![Cell::String("not bytes".to_string())],
+            },
+        ];
+
+        let array_ref = build_array_for_field(&rows, 0, &DataType::LargeBinary);
+        let large_binary_array = array_ref
+            .as_any()
+            .downcast_ref::<arrow::array::LargeBinaryArray>()
+            .unwrap();
+
+        assert_eq!(large_binary_array.len(), 4);
+        assert_eq!(large_binary_array.value(0), test_bytes);
+        assert_eq!(large_binary_array.value(1), Vec::<u8>::new());
+        assert!(large_binary_array.is_null(2));
+        assert!(large_binary_array.is_null(3));
     }
 
     #[test]
@@ -1665,6 +1786,47 @@ mod tests {
         assert_eq!(uuid_array.value(0), expected_bytes);
         assert!(uuid_array.is_null(1));
         assert!(uuid_array.is_null(2));
+    }
+
+    #[test]
+    fn test_build_decimal128_array() {
+        use arrow::datatypes::{Field, Schema};
+        use etl::types::PgNumeric;
+
+        let rows = vec![
+            TableRow {
+                values: vec![Cell::Numeric("123.45".parse::<PgNumeric>().unwrap())],
+            },
+            TableRow {
+                values: vec![Cell::Numeric("-0.01".parse::<PgNumeric>().unwrap())],
+            },
+            TableRow {
+                values: vec![Cell::Null],
+            },
+            TableRow {
+                values: vec![Cell::Numeric("0".parse::<PgNumeric>().unwrap())],
+            },
+        ];
+
+        let schema = Schema::new(vec![Field::new(
+            "amount",
+            DataType::Decimal128(10, 2),
+            true,
+        )]);
+
+        let batch = rows_to_record_batch(&rows, schema).unwrap();
+        let dec_array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal128Array>()
+            .unwrap();
+
+        assert_eq!(dec_array.len(), 4);
+        assert_eq!(dec_array.data_type(), &DataType::Decimal128(10, 2));
+        assert_eq!(dec_array.value(0), 12_345); // 123.45 -> 12345 (scale 2)
+        assert_eq!(dec_array.value(1), -1); // -0.01 -> -1 (scale 2)
+        assert!(dec_array.is_null(2));
+        assert_eq!(dec_array.value(3), 0);
     }
 
     #[test]
@@ -2886,6 +3048,59 @@ mod tests {
 
         // Fourth row: null
         assert!(list_array.is_null(3));
+    }
+
+    #[test]
+    fn test_build_decimal128_list_array() {
+        use arrow::array::ListArray;
+        use arrow::datatypes::Field;
+        use etl::types::PgNumeric;
+
+        let precision: u8 = 10;
+        let scale: i8 = 2;
+
+        let field = Field::new("item", DataType::Decimal128(precision, scale), true);
+        let field_ref = Arc::new(field);
+
+        let rows = vec![
+            TableRow {
+                values: vec![Cell::Array(ArrayCell::Numeric(vec![
+                    Some("123.45".parse::<PgNumeric>().unwrap()),
+                    None,
+                    Some("-0.01".parse::<PgNumeric>().unwrap()),
+                ]))],
+            },
+            TableRow {
+                values: vec![Cell::Array(ArrayCell::Numeric(vec![]))],
+            }, // empty list
+            TableRow {
+                values: vec![Cell::Null],
+            }, // null list
+        ];
+
+        let array_ref = build_decimal128_list_array(&rows, 0, field_ref.clone(), precision, scale);
+        let list_array = array_ref.as_any().downcast_ref::<ListArray>().unwrap();
+
+        assert_eq!(list_array.len(), 3);
+
+        // Row 0
+        assert!(!list_array.is_null(0));
+        let first_list = list_array.value(0);
+        let dec_array = first_list
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal128Array>()
+            .unwrap();
+        assert_eq!(dec_array.len(), 3);
+        assert_eq!(dec_array.value(0), 12_345); // 123.45
+        assert!(dec_array.is_null(1));
+        assert_eq!(dec_array.value(2), -1); // -0.01
+
+        // Row 1: empty list
+        assert!(!list_array.is_null(1));
+        assert_eq!(list_array.value(1).len(), 0);
+
+        // Row 2: null list
+        assert!(list_array.is_null(2));
     }
 
     #[test]

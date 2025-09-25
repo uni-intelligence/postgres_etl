@@ -325,35 +325,33 @@ mod tests {
         use deltalake::datafusion::prelude::col;
 
         let primary_keys = vec![col("id")];
-        let result = qualify_primary_keys(primary_keys, "source", "target");
+        let result = qualify_primary_keys(primary_keys, "source", "target").unwrap();
 
         assert_debug_snapshot!(result, @r#"
-        Some(
-            BinaryExpr(
-                BinaryExpr {
-                    left: Column(
-                        Column {
-                            relation: Some(
-                                Bare {
-                                    table: "source",
-                                },
-                            ),
-                            name: "id",
-                        },
-                    ),
-                    op: Eq,
-                    right: Column(
-                        Column {
-                            relation: Some(
-                                Bare {
-                                    table: "target",
-                                },
-                            ),
-                            name: "id",
-                        },
-                    ),
-                },
-            ),
+        BinaryExpr(
+            BinaryExpr {
+                left: Column(
+                    Column {
+                        relation: Some(
+                            Bare {
+                                table: "source",
+                            },
+                        ),
+                        name: "id",
+                    },
+                ),
+                op: Eq,
+                right: Column(
+                    Column {
+                        relation: Some(
+                            Bare {
+                                table: "target",
+                            },
+                        ),
+                        name: "id",
+                    },
+                ),
+            },
         )
         "#);
     }
@@ -361,65 +359,63 @@ mod tests {
     #[test]
     fn test_qualify_primary_keys_composite_columns() {
         let primary_keys = vec![col("tenant_id"), col("user_id")];
-        let result = qualify_primary_keys(primary_keys, "src", "tgt");
+        let result = qualify_primary_keys(primary_keys, "src", "tgt").unwrap();
 
         assert_debug_snapshot!(result, @r#"
-        Some(
-            BinaryExpr(
-                BinaryExpr {
-                    left: BinaryExpr(
-                        BinaryExpr {
-                            left: Column(
-                                Column {
-                                    relation: Some(
-                                        Bare {
-                                            table: "src",
-                                        },
-                                    ),
-                                    name: "tenant_id",
-                                },
-                            ),
-                            op: Eq,
-                            right: Column(
-                                Column {
-                                    relation: Some(
-                                        Bare {
-                                            table: "tgt",
-                                        },
-                                    ),
-                                    name: "tenant_id",
-                                },
-                            ),
-                        },
-                    ),
-                    op: And,
-                    right: BinaryExpr(
-                        BinaryExpr {
-                            left: Column(
-                                Column {
-                                    relation: Some(
-                                        Bare {
-                                            table: "src",
-                                        },
-                                    ),
-                                    name: "user_id",
-                                },
-                            ),
-                            op: Eq,
-                            right: Column(
-                                Column {
-                                    relation: Some(
-                                        Bare {
-                                            table: "tgt",
-                                        },
-                                    ),
-                                    name: "user_id",
-                                },
-                            ),
-                        },
-                    ),
-                },
-            ),
+        BinaryExpr(
+            BinaryExpr {
+                left: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "src",
+                                    },
+                                ),
+                                name: "tenant_id",
+                            },
+                        ),
+                        op: Eq,
+                        right: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "tgt",
+                                    },
+                                ),
+                                name: "tenant_id",
+                            },
+                        ),
+                    },
+                ),
+                op: And,
+                right: BinaryExpr(
+                    BinaryExpr {
+                        left: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "src",
+                                    },
+                                ),
+                                name: "user_id",
+                            },
+                        ),
+                        op: Eq,
+                        right: Column(
+                            Column {
+                                relation: Some(
+                                    Bare {
+                                        table: "tgt",
+                                    },
+                                ),
+                                name: "user_id",
+                            },
+                        ),
+                    },
+                ),
+            },
         )
         "#);
     }

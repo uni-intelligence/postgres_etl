@@ -29,8 +29,9 @@ pub fn postgres_type_to_delta_type(typ: &PgType, modifier: i32) -> DeltaDataType
         }
         &PgType::DATE => DeltaDataType::Primitive(PrimitiveType::Date),
         &PgType::TIME => DeltaDataType::Primitive(PrimitiveType::Timestamp),
-        &PgType::TIMESTAMP => DeltaDataType::Primitive(PrimitiveType::Timestamp),
-        &PgType::TIMESTAMPTZ => DeltaDataType::Primitive(PrimitiveType::TimestampNtz),
+        // NOTE: Postgres type is TIMESTAMP(TZ), not TIMESTAMP(NTZ)
+        &PgType::TIMESTAMP => DeltaDataType::Primitive(PrimitiveType::TimestampNtz),
+        &PgType::TIMESTAMPTZ => DeltaDataType::Primitive(PrimitiveType::Timestamp),
         &PgType::UUID => DeltaDataType::Primitive(PrimitiveType::String),
         &PgType::JSON | &PgType::JSONB => DeltaDataType::Primitive(PrimitiveType::String),
         &PgType::OID => DeltaDataType::Primitive(PrimitiveType::Long),
@@ -48,8 +49,9 @@ pub fn postgres_type_to_delta_type(typ: &PgType, modifier: i32) -> DeltaDataType
         &PgType::NUMERIC_ARRAY => create_delta_list_type(PrimitiveType::String),
         &PgType::DATE_ARRAY => create_delta_list_type(PrimitiveType::Date),
         &PgType::TIME_ARRAY => create_delta_list_type(PrimitiveType::Timestamp),
-        &PgType::TIMESTAMP_ARRAY => create_delta_list_type(PrimitiveType::Timestamp),
-        &PgType::TIMESTAMPTZ_ARRAY => create_delta_list_type(PrimitiveType::TimestampNtz),
+        // NOTE: Postgres type is TIMESTAMP(TZ), not TIMESTAMP(NTZ)
+        &PgType::TIMESTAMP_ARRAY => create_delta_list_type(PrimitiveType::TimestampNtz),
+        &PgType::TIMESTAMPTZ_ARRAY => create_delta_list_type(PrimitiveType::Timestamp),
         &PgType::UUID_ARRAY => create_delta_list_type(PrimitiveType::String),
         &PgType::JSON_ARRAY | &PgType::JSONB_ARRAY => create_delta_list_type(PrimitiveType::String),
         &PgType::OID_ARRAY => create_delta_list_type(PrimitiveType::Long),

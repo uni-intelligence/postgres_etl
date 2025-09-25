@@ -33,3 +33,5 @@ pyvenv.cfg
 
 # Log files
 *.log
+
+lcov.info
